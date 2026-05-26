@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: credit_recon_db
+    restart: always
+    environment:
+      POSTGRES_USER: recon_admin
+      POSTGRES_PASSWORD: StrongPassword123!
+      POSTGRES_DB: credit_recon
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

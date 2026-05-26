@@ -1,0 +1,37 @@
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+
+# Only one deploy at a time. If a new push comes while one is running,
+# GitHub queues it and runs after the current one finishes.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH and run deploy.sh
+    runs-on: ubuntu-latest
+
+    steps:
+      # We don't actually need the code checked out on the runner —
+      # the server pulls from origin/main itself. But checking out
+      # gives us the deploy/ scripts if we ever want to scp them.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: SSH into server and run deploy script
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_SSH_KEY }}
+          port:     ${{ secrets.DEPLOY_PORT || 22 }}
+          # The server already has the repo cloned + deploy.sh in place.
+          # We just trigger it.
+          script: |
+            bash /opt/recon/deploy/deploy.sh
+          # Stream stdout/stderr live so we can see what happened.
+          script_stop: true

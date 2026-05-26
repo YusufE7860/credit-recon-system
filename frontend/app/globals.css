@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f3f4f6;       /* Tailwind gray-100 */
+  --foreground: #111827;       /* Tailwind gray-900 */
+  --brand: #f97316;            /* Tailwind orange-500 */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand: var(--brand);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* No automatic dark-mode flip — the app uses a fixed light theme
+   with a dark sidebar. The previous @media query was making body
+   text invisible on white cards when the OS was in dark mode. */
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}

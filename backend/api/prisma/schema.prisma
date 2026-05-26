@@ -1,0 +1,423 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// Postgres enums give us type-safe status fields. If you try to save a
+// status string that isn't in the list, the DB will reject it.
+// ---------------------------------------------------------------------------
+
+enum ReconStatus {
+  PENDING    // newly uploaded, not yet processed
+  UNMATCHED  // looked for a match, none found
+  MATCHED    // linked to a transaction
+  DISPUTED   // user flagged a mismatch
+  REJECTED   // admin rejected the invoice
+}
+
+enum Role {
+  USER       // regular employee, sees only their own data
+  UPLOADER   // assistant who uploads invoices on behalf of one or more USERs.
+             // Sees ONLY the invoices they themselves uploaded — never the
+             // owning user's totals, transactions, or other uploaders' work.
+  REPORTING  // read-only org-wide, can upload statements + run recon
+  ADMIN      // full access
+}
+
+// Edit requests can target either financial fields (supplier/total/vat)
+// or metadata fields (category/store/notes). Owner can request, admin
+// approves, both kinds open a 24-hour edit window on the invoice.
+enum EditRequestType {
+  FINANCIAL
+  METADATA
+}
+
+enum EditRequestStatus {
+  PENDING   // user has asked, admin hasn't responded
+  APPROVED  // admin approved; invoice is unlocked until editUnlockedUntil
+  REJECTED  // admin denied
+  USED      // user made an edit and the unlock was consumed
+  EXPIRED   // 24h window passed without an edit
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(USER)
+  // Soft delete: inactive users can't log in but their data is preserved
+  // for audit. Admin can reactivate via the users admin page.
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions      Transaction[]
+  invoices          Invoice[]
+  statements        Statement[]
+  editRequests      EditRequest[] @relation("RequestedBy")
+  reviewedRequests  EditRequest[] @relation("ReviewedBy")
+  passwordResets    PasswordResetToken[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+  reconReports      ReconReport[] @relation("ReconReportFor")
+  reconReportsRun   ReconReport[] @relation("ReconReportBy")
+  uploadedInvoices  Invoice[]     @relation("InvoiceUploader")
+
+  // For UPLOADER role only: list of User IDs they are allowed to upload
+  // invoices on behalf of. Empty for every other role.
+  managedUserIds    String[]      @default([])
+}
+
+// Short-lived tokens for the "forgot password" flow.
+// Tokens are stored hashed so a DB compromise can't be used to take over
+// accounts during the reset window.
+model PasswordResetToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique         // sha256 of the raw token
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Card {
+  id             String   @id @default(uuid())
+  cardName       String              // user-defined label, e.g. "Marketing Visa"
+  cardholderName String?             // name printed on the card (from statement)
+  maskedNumber   String              // e.g. "4228 24** **** 7005"
+  last4          String?  @unique    // indexed for fast lookup during statement import
+  assignedUserId String?
+  createdAt      DateTime @default(now())
+}
+
+// A line item from a credit card statement (what the bank says you spent).
+model Transaction {
+  id              String   @id @default(uuid())
+
+  amount          Float
+  merchant        String
+  category        String?
+  description     String?
+
+  transactionDate DateTime
+  uploadedDate    DateTime @default(now())
+
+  status          String   @default("PENDING")
+  matched         Boolean  @default(false)
+  flagged         Boolean  @default(false)
+  duplicate       Boolean  @default(false)
+
+  cardLast4       String?
+
+  // Inverse side of the Invoice -> Transaction relation. One transaction
+  // can be matched to at most one invoice (most cards only have one
+  // receipt per purchase). If you need many-to-one later, swap to an
+  // array here.
+  invoice         Invoice?
+
+  // Which bank-statement upload this transaction came from. Nullable
+  // because we allow manual transaction entry too.
+  statementId     String?
+  statement       Statement? @relation(fields: [statementId], references: [id], onDelete: SetNull)
+
+  userId          String
+  user            User @relation(fields: [userId], references: [id])
+
+  createdAt       DateTime @default(now())
+}
+
+// A bank statement file the user uploaded. One statement contains many
+// transactions. Deleting a statement nullifies the link on its
+// transactions (we keep the rows so any matches survive).
+model Statement {
+  id              String   @id @default(uuid())
+
+  statementName   String   // user-provided label, e.g. "March 2024 Visa"
+  bankName        String?
+  cardLast4       String?
+
+  periodStart     DateTime?
+  periodEnd       DateTime?
+
+  filePath        String   // CSV stored on disk (relative to uploads/)
+  importedCount   Int      @default(0)
+  skippedCount    Int      @default(0)
+
+  transactions    Transaction[]
+
+  userId          String   // who uploaded it
+  user            User     @relation(fields: [userId], references: [id])
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// An employee-submitted invoice (the proof-of-purchase side).
+// Many of these fields come from OCR — see the OCR service in step 8.
+model Invoice {
+  id              String   @id @default(uuid())
+
+  // ---- Extracted by OCR (read-only in the UI once saved) ----
+  supplier        String
+  invoiceNumber   String?
+  invoiceDate     DateTime
+  subtotal        Float    @default(0)
+  vat             Float    @default(0)
+  total           Float                       // amount as printed on the invoice
+  currency        String   @default("ZAR")    // currency as printed
+  // Total converted into ZAR for matching against bank transactions.
+  // Equals `total` when currency is ZAR; otherwise total * exchangeRate.
+  // Recorded at OCR time so future rate changes don't retroactively
+  // shift historical matches.
+  totalZAR        Float?
+  exchangeRate    Float?
+
+  // ---- User-editable metadata ----
+  category        String?
+  // Legacy single-store field. Kept for backward compatibility — older
+  // invoices wrote here. New uploads write to storeAllocations (array)
+  // and mirror the first entry back here so existing queries keep working.
+  storeAllocation String?
+  // Multi-store allocation. When a single invoice covers spend across
+  // multiple departments (e.g. an IT order split across 3 stores),
+  // all of them go in here. Empty array = unallocated.
+  storeAllocations String[] @default([])
+  notes           String?
+
+  // ---- OCR diagnostics ----
+  ocrConfidence   Float    @default(0)   // 0..1, average across fields
+  requiresReview  Boolean  @default(false)
+  ocrRawText      String?  @db.Text       // full OCR output for audit
+
+  // ---- File storage ----
+  filePath        String?  // where the uploaded file lives on disk/S3
+  fileMimeType    String?
+
+  // ---- Reconciliation state ----
+  status          ReconStatus @default(PENDING)
+  matchedAt       DateTime?
+  transactionId   String?  @unique  // @unique enforces one-to-one
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+
+  // ---- Edit locks ----
+  // Owner can edit financial fields when this is in the future.
+  // Set by admin approving a FINANCIAL EditRequest.
+  editUnlockedUntil DateTime?
+  // Owner can edit metadata fields (category/store/notes) when this is
+  // in the future. Set by admin approving a METADATA EditRequest.
+  // Note: at upload time the metadata IS editable (initial fill-in),
+  // so we don't lock until first persistence completes.
+  metadataUnlockedUntil DateTime?
+
+  // ---- Ownership ----
+  // userId = the cardholder this invoice belongs to (its "owner").
+  // uploaderId = the user who clicked Upload. For self-uploads these
+  // are the same. For UPLOADER-role users they differ.
+  userId          String
+  user            User @relation(fields: [userId], references: [id])
+  uploaderId      String?
+  uploader        User? @relation("InvoiceUploader", fields: [uploaderId], references: [id], onDelete: SetNull)
+
+  editRequests    EditRequest[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// Tracks user requests to edit sealed invoices.
+// Once requiresReview is false and the invoice is locked, the only way
+// to change financial fields is for an admin to approve a request,
+// which sets Invoice.editUnlockedUntil to now + 24h.
+model EditRequest {
+  id            String   @id @default(uuid())
+
+  invoiceId     String
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  requestedById String
+  requestedBy   User     @relation("RequestedBy", fields: [requestedById], references: [id])
+
+  reason        String   @db.Text
+  fieldsToEdit  String?  // optional comma-separated hint, e.g. "total,vat"
+
+  // What the user wants to edit. Defaults to FINANCIAL for backward
+  // compatibility with rows that pre-date this column.
+  type          EditRequestType @default(FINANCIAL)
+
+  status        EditRequestStatus @default(PENDING)
+  reviewedById  String?
+  reviewedBy    User?    @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt    DateTime?
+  reviewNote    String?  @db.Text
+
+  // When status flips to APPROVED, this gets set to now + 24h. Used to
+  // mirror Invoice.editUnlockedUntil for audit.
+  approvedUntil DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([requestedById])
+}
+
+// Immutable audit log of every important action. Built for finance
+// compliance — you should be able to answer "who edited this invoice
+// and when" months later. Never updated; only inserted.
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorId     String?  // null for unauthenticated actions like failed logins
+  actor       User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action      String   // e.g. "INVOICE_UPLOADED"
+  entityType  String?  // e.g. "Invoice"
+  entityId    String?
+  metadata    Json?    // free-form domain context
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// In-app notifications. One row per (recipient, event).
+// We don't fan out via FCM/APNs yet — frontend polls /notifications.
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String   @db.Text
+  link      String?  // optional URL the bell-icon dropdown navigates to
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@index([createdAt])
+}
+
+// One snapshot per (recon run, user, period). Immutable once created.
+// Each report contains the full per-card transaction listing for the
+// user in the period, used to generate the FNB-style XLSX sheet.
+model ReconReport {
+  id              String   @id @default(uuid())
+
+  // Naming convention: "Cardholder Name/APRIL/2026"
+  name            String
+
+  // Period this report covers — set at recon-run time by the operator.
+  periodStart     DateTime
+  periodEnd       DateTime
+
+  // The user the report belongs to (visibility = own data for USER,
+  // everyone's for ADMIN/REPORTING).
+  userId          String
+  user            User     @relation("ReconReportFor", fields: [userId], references: [id], onDelete: Cascade)
+
+  // Whoever clicked "Run Reconciliation".
+  runById         String?
+  runBy           User?    @relation("ReconReportBy", fields: [runById], references: [id], onDelete: SetNull)
+  runByName       String   // denormalized so deleting the user doesn't blank the audit trail
+
+  // Snapshot of every transaction included, with computed fields
+  // (matched invoice, voucher Y/N, currency conversion, etc.).
+  // We store full data so the XLSX can be regenerated on demand
+  // without re-running the matching algorithm.
+  rows            Json
+
+  // Summary stats — convenient for the report list view without
+  // having to deserialize rows.
+  totalSpend      Float    @default(0)
+  matchedCount   Int      @default(0)
+  unmatchedCount Int      @default(0)
+  cardCount       Int      @default(0)
+
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([periodStart])
+  @@index([createdAt])
+}
+
+// Company-internal locations (branches, workshops, offices) that an
+// invoice for Stationary or IT Equipment can be allocated to.
+// Admin manages the list; users pick from it on upload.
+model Store {
+  id        String   @id @default(uuid())
+  name      String   @unique           // display name, e.g. "Cape Town Branch"
+  code      String?  @unique           // optional short code, e.g. "CPT"
+  address   String?
+  active    Boolean  @default(true)    // soft-delete via active=false
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// FFG expense categories (the chart-of-accounts buckets every invoice
+// is assigned to). Migrated from a hardcoded frontend list so the
+// accountant can add/rename/deactivate without a code change.
+// Soft-deleted via active=false so historical invoices keep their
+// reference even if the category is later retired.
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  // Optional display order for the upload dropdown. Lower = higher.
+  // Null entries sort to the end alphabetically.
+  sortOrder Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Runtime-editable settings (mail, FX, recon thresholds, etc.).
+// Single row per key. Value is JSON so we don't have to maintain a
+// separate column per setting type.
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?  // userId of the admin who last changed this
+}
+
+// Cache of historical FX rates against ZAR. Populated lazily by the
+// invoice pipeline: when an invoice is uploaded with a non-ZAR
+// currency, we look up the rate at its invoiceDate. Cache miss →
+// fetch from Frankfurter (ECB data, free, no API key) → store here so
+// every subsequent invoice for the same (date, currency) is a DB hit
+// instead of a network round trip.
+//
+// rateToZAR = number of ZAR per 1 unit of `currency`. e.g. USD on
+// 2024-03-15 might be 18.74 → 1 USD = 18.74 ZAR that day.
+// source records where the row came from for audit + debugging:
+//   'frankfurter' = fresh from the API
+//   'fallback'    = API didn't cover this currency or was unreachable;
+//                   we used the current configured rate instead.
+model ExchangeRate {
+  id        String   @id @default(uuid())
+  date      DateTime // normalised to 00:00 UTC of the day
+  currency  String   // ISO 4217 code, e.g. "USD"
+  rateToZAR Float
+  source    String   // 'frankfurter' | 'fallback'
+  createdAt DateTime @default(now())
+
+  // A (date, currency) pair is unique — we never want two competing
+  // rows for the same day.
+  @@unique([date, currency])
+  @@index([date])
+}
