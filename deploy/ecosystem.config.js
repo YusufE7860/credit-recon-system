@@ -16,13 +16,20 @@ module.exports = {
     {
       name: 'recon-api',
       cwd: './backend/api',
-      script: 'dist/main.js',     // built by `nest build`
+      // NestJS with the default nest-cli.json + tsconfig preserves the
+      // src/ directory structure in the build output. The entry point
+      // ends up at dist/src/main.js, not dist/main.js.
+      script: 'dist/src/main.js',
       instances: 1,               // bump if you scale to multi-core
       autorestart: true,
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
+        // Bind to loopback only — the only thing that should reach the
+        // API is Nginx on the same host. Stops anyone on the network
+        // from hitting :3000 directly and bypassing CORS/rate limits.
+        HOST: '127.0.0.1',
       },
       out_file: '/var/log/recon/api-out.log',
       error_file: '/var/log/recon/api-err.log',
@@ -32,7 +39,9 @@ module.exports = {
       name: 'recon-web',
       cwd: './frontend',
       script: 'node_modules/next/dist/bin/next',
-      args: 'start --port 3001',
+      // --hostname 127.0.0.1 binds Next to loopback only, same reason
+      // as the backend above — Nginx on :80 is the only public face.
+      args: 'start --port 3001 --hostname 127.0.0.1',
       instances: 1,
       autorestart: true,
       max_memory_restart: '512M',

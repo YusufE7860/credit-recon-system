@@ -360,7 +360,7 @@ export default function Dashboard() {
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value: number) => fmtZAR(value)}
+                    formatter={(value) => fmtZAR(Number(value))}
                   />
                   <Legend />
                 </PieChart>
@@ -387,7 +387,7 @@ export default function Dashboard() {
                     }
                   />
                   <Tooltip
-                    formatter={(value: number) => fmtZAR(value)}
+                    formatter={(value) => fmtZAR(Number(value))}
                   />
                   <Bar dataKey="total" fill="#0f172a" />
                 </BarChart>

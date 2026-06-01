@@ -240,7 +240,10 @@ export default function InvoiceDetailPage() {
   async function submitEditRequest(
     type: 'FINANCIAL' | 'METADATA' = 'FINANCIAL',
   ) {
-    if (!requestReason.trim()) return;
+    // TypeScript can't carry the early-return narrowing into this
+    // nested closure — explicit guard so `invoice.id` below is safe
+    // and we cleanly bail if Submit fires on a still-loading page.
+    if (!invoice || !requestReason.trim()) return;
     setRequestBusy(true);
     setError('');
     setMessage('');

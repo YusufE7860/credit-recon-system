@@ -62,8 +62,9 @@ prompt() {
 # can override at the prompt anyway.
 DETECTED_IP=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | head -1 | cut -d/ -f1 || true)
 
-prompt REPO_URL    "GitHub repo URL (https or ssh)" "https://github.com/yourorg/credit-recon-system.git"
-prompt SERVER_HOST "Public IP or domain (no http://, no trailing slash)" "${DETECTED_IP:-127.0.0.1}"
+prompt REPO_URL    "GitHub repo URL (https or ssh)" "https://github.com/YusufE7860/credit-recon-system.git"
+prompt SERVER_HOST "Public IP, LAN IP, or domain (no http://, no trailing slash)" "${DETECTED_IP:-127.0.0.1}"
+prompt SERVER_PORT "Public port to serve on (80 = standard, anything else = obscurity)" "80"
 prompt ADMIN_EMAIL "First admin email" "admin@example.com"
 prompt ADMIN_PASS  "First admin password (will be hashed)" "" hidden
 echo
@@ -72,26 +73,58 @@ echo
 prompt ANTHROPIC_KEY "Anthropic API key for AI OCR (Enter = skip, OCR falls back to Tesseract)" "" hidden
 echo
 
-# Auto-generate the DB password if blank.
+# Auto-generate the DB password if blank. We always go hex so we never
+# have to URL-encode special characters in the DATABASE_URL — that
+# bit-us-once class of bug (`@` in the password breaks postgresql://
+# parsing) is impossible by construction.
 if [[ -z "$DB_PASS" ]]; then
   DB_PASS=$(openssl rand -hex 16)
   echo "  → generated DB password: $DB_PASS  (save this somewhere safe)"
 fi
 
-# JWT secret is always auto-generated.
+# If the operator typed their own DB password and it has URL-unsafe
+# characters, percent-encode them for the DATABASE_URL. Postgres still
+# stores the literal password — only the URL representation needs encoding.
+urlencode() {
+  local s="$1" out=""
+  local i c
+  for ((i=0; i<${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9._~-]) out+="$c" ;;
+      *) out+=$(printf '%%%02X' "'$c") ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+DB_PASS_URL=$(urlencode "$DB_PASS")
+
+# JWT secret is always auto-generated. Same secret goes into both the
+# backend (for signing) and the frontend (Next.js middleware verifies
+# the cookie at the edge before the page renders).
 JWT_SECRET=$(openssl rand -hex 64)
 
-# Decide whether the URL we'll bake into the frontend uses http or https.
+# Decide scheme + port suffix for the URL we bake into the frontend.
 # Plain IP = http (no HTTPS without a domain). Anything else = https assumed.
+# Port 80 (http) / 443 (https) are stripped from the URL since browsers
+# default to them — anything else gets appended.
 if [[ "$SERVER_HOST" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
-  PUBLIC_URL="http://$SERVER_HOST"
+  SCHEME="http"
   COOKIE_SECURE="false"
-  echo "  → detected raw IP; using http:// and COOKIE_SECURE=false"
+  DEFAULT_PORT="80"
 else
-  PUBLIC_URL="https://$SERVER_HOST"
+  SCHEME="https"
   COOKIE_SECURE="true"
-  echo "  → detected hostname; using https:// (you'll set up certbot after)"
+  DEFAULT_PORT="443"
 fi
+
+if [[ "$SERVER_PORT" == "$DEFAULT_PORT" ]]; then
+  PUBLIC_URL="$SCHEME://$SERVER_HOST"
+else
+  PUBLIC_URL="$SCHEME://$SERVER_HOST:$SERVER_PORT"
+fi
+
+echo "  → final public URL: $PUBLIC_URL (COOKIE_SECURE=$COOKIE_SECURE)"
 
 echo
 echo "Installing — this takes 3–10 minutes depending on your VM..."
@@ -151,12 +184,13 @@ if ! sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw recon; then
   sudo -u postgres createdb -O recon recon
 fi
 
-# Make sure local connections use md5 (password) instead of peer. On
-# fresh Ubuntu it's already md5/scram for non-postgres users, but
-# defensive belts-and-braces here.
+# Make sure local connections accept passwords. Fresh Postgres
+# installs on Ubuntu use `peer` for local + scram-sha-256 for host —
+# we connect via 127.0.0.1 (host), but we still flip `peer` to
+# scram-sha-256 in case any code path falls back to local sockets.
 PG_HBA=$(ls /etc/postgresql/*/main/pg_hba.conf 2>/dev/null | head -1)
 if [[ -n "$PG_HBA" ]] && grep -qE '^local\s+all\s+all\s+peer' "$PG_HBA"; then
-  sed -i 's/^\(local\s\+all\s\+all\s\+\)peer$/\1md5/' "$PG_HBA"
+  sed -i 's/^\(local\s\+all\s\+all\s\+\)peer$/\1scram-sha-256/' "$PG_HBA"
   systemctl restart postgresql
 fi
 
@@ -193,8 +227,9 @@ chown -R recon:recon /opt/recon /var/log/recon
 echo "==> Writing env files"
 
 cat > /opt/recon/backend/api/.env <<EOF
-# --- Database ---
-DATABASE_URL="postgresql://recon:$DB_PASS@127.0.0.1:5432/recon?schema=public"
+# --- Database (DB_PASS_URL is the percent-encoded form for the URL;
+#     Postgres stores and authenticates against the literal value) ---
+DATABASE_URL="postgresql://recon:$DB_PASS_URL@127.0.0.1:5432/recon?schema=public"
 
 # --- JWT ---
 JWT_SECRET="$JWT_SECRET"
@@ -204,9 +239,16 @@ JWT_EXPIRES_IN="1d"
 SESSION_INACTIVITY_MINUTES=10
 COOKIE_SECURE=$COOKIE_SECURE
 
+# --- CORS — origins allowed to call the API. Must match exactly the
+#     scheme + host + port users type into their browser, or browsers
+#     will block the call with a CORS error. ---
+FRONTEND_URL=$PUBLIC_URL
+
 # --- Production ---
 NODE_ENV=production
 PORT=3000
+# Bind to loopback only — Nginx on :80 is the only public face.
+HOST=127.0.0.1
 
 # --- AI OCR (optional) ---
 ANTHROPIC_API_KEY="$ANTHROPIC_KEY"
@@ -224,7 +266,14 @@ PUBLIC_BASE_URL="$PUBLIC_URL"
 EOF
 
 cat > /opt/recon/frontend/.env.local <<EOF
+# Browser-facing API base. Must match the URL users open in their
+# browser, otherwise CORS will block login.
 NEXT_PUBLIC_API_URL=$PUBLIC_URL/api
+
+# Used by the Next.js middleware to verify the JWT cookie at the edge,
+# before any page renders. MUST be identical to the backend's
+# JWT_SECRET — same value signs and verifies the token.
+JWT_SECRET=$JWT_SECRET
 EOF
 
 chown recon:recon /opt/recon/backend/api/.env /opt/recon/frontend/.env.local
@@ -296,10 +345,10 @@ fi
 
 # ---------- 10. Nginx ----------
 
-echo "==> Writing Nginx site config"
+echo "==> Writing Nginx site config (listening on port $SERVER_PORT)"
 cat > /etc/nginx/sites-available/recon <<NGINX
 server {
-  listen 80 default_server;
+  listen $SERVER_PORT default_server;
   server_name _;
 
   # Allow large invoice uploads (PDFs can run 5+ MB).
@@ -338,17 +387,77 @@ systemctl reload nginx
 
 # ---------- 11. Firewall ----------
 
-echo "==> Configuring UFW"
+echo "==> Configuring UFW (allowing SSH + port $SERVER_PORT)"
 ufw allow OpenSSH >/dev/null
-ufw allow 80/tcp >/dev/null
-# Allow 443 too so when you add HTTPS later it just works.
+ufw allow "$SERVER_PORT/tcp" >/dev/null
+# Also allow 443 so a later certbot setup just works without re-running UFW.
 ufw allow 443/tcp >/dev/null
 ufw --force enable >/dev/null
+echo "  Tip: lock this down to known subnets with"
+echo "      sudo ufw delete allow $SERVER_PORT/tcp"
+echo "      sudo ufw allow from 192.168.0.0/16 to any port $SERVER_PORT proto tcp"
 
-# ---------- 12. Done ----------
+# ---------- 12. Smoke test ----------
 
-# Give PM2 a couple of seconds to boot before we sanity-check the URL.
-sleep 3
+echo "==> Running smoke tests"
+# Give PM2 + nginx a couple of seconds to settle.
+sleep 4
+
+FAIL_COUNT=0
+
+# 1. Ports are bound on loopback (not all-interfaces).
+if ! sudo ss -tlnp 2>/dev/null | grep -q '127\.0\.0\.1:3000'; then
+  echo "  [WARN] Backend not bound to 127.0.0.1:3000 (or not listening)"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+if ! sudo ss -tlnp 2>/dev/null | grep -q '127\.0\.0\.1:3001'; then
+  echo "  [WARN] Frontend not bound to 127.0.0.1:3001 (or not listening)"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+
+# 2. Backend responds through Nginx with the expected 401 for /auth/me.
+if ! curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1/api/auth/me 2>/dev/null | grep -q '^401$'; then
+  CODE=$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1/api/auth/me 2>/dev/null || echo "no-response")
+  echo "  [WARN] Backend smoke test failed (expected 401, got $CODE)"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+
+# 3. Frontend renders.
+if ! curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1/login 2>/dev/null | grep -q '^200$'; then
+  CODE=$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1/login 2>/dev/null || echo "no-response")
+  echo "  [WARN] Frontend smoke test failed (expected 200, got $CODE)"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+
+# 4. CORS preflight echoes back our chosen origin.
+CORS_ORIGIN=$(curl -fsS -i -X OPTIONS http://127.0.0.1/api/auth/login \
+  -H "Origin: $PUBLIC_URL" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type" 2>/dev/null \
+  | grep -i '^Access-Control-Allow-Origin:' | tr -d '\r' | awk '{print $2}')
+if [[ "$CORS_ORIGIN" != "$PUBLIC_URL" ]]; then
+  echo "  [WARN] CORS allow-origin is '$CORS_ORIGIN', expected '$PUBLIC_URL'"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+
+# 5. The admin user actually exists.
+ADMIN_COUNT=$(PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U recon -d recon -tA -c \
+  "SELECT COUNT(*) FROM \"User\" WHERE role = 'ADMIN' AND active = true;" 2>/dev/null)
+if [[ "$ADMIN_COUNT" -lt 1 ]]; then
+  echo "  [WARN] No active ADMIN user found in the database"
+  FAIL_COUNT=$((FAIL_COUNT+1))
+fi
+
+if [[ $FAIL_COUNT -eq 0 ]]; then
+  echo "  All smoke tests passed."
+else
+  echo "  $FAIL_COUNT smoke test(s) failed — see warnings above."
+  echo "  Useful debugging:"
+  echo "      sudo -u recon pm2 logs recon-api --lines 50"
+  echo "      sudo -u recon pm2 logs recon-web --lines 50"
+fi
+
+# ---------- 13. Done ----------
 
 echo
 echo "================================================================"
