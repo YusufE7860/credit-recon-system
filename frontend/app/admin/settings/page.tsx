@@ -63,7 +63,7 @@ export default function SettingsPage() {
   return (
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
-      <section className="flex-1 p-8 max-w-3xl">
+      <section className="flex-1 p-4 pt-16 md:p-8 max-w-3xl">
         <h1 className="text-3xl font-bold">Settings</h1>
         <p className="text-gray-600 mt-1 mb-6">
           Runtime configuration — saved values override the .env file. Empty fields fall back to env or hard-coded defaults.

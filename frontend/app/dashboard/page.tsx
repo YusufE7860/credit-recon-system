@@ -161,7 +161,7 @@ export default function Dashboard() {
     return (
       <main className="flex min-h-screen bg-gray-100">
         <Sidebar />
-        <section className="flex-1 p-8">Loading dashboard...</section>
+        <section className="flex-1 p-4 pt-16 md:p-8">Loading dashboard...</section>
       </main>
     );
   }
@@ -170,7 +170,7 @@ export default function Dashboard() {
     return (
       <main className="flex min-h-screen bg-gray-100">
         <Sidebar />
-        <section className="flex-1 p-8">
+        <section className="flex-1 p-4 pt-16 md:p-8">
           <p className="text-red-600">
             {error || 'Failed to load dashboard data.'}
           </p>
@@ -185,7 +185,7 @@ export default function Dashboard() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-8 space-y-6">
+      <section className="flex-1 p-4 pt-16 md:p-8 space-y-6">
         {/* Header */}
         {/* Run-Reconciliation button moved out — admins now run recons
             from Reports > Recon tab (single source of truth, with the

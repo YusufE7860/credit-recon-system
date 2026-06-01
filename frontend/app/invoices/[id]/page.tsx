@@ -207,7 +207,7 @@ export default function InvoiceDetailPage() {
     return (
       <main className="flex min-h-screen bg-gray-100">
         <Sidebar />
-        <section className="flex-1 p-8">Loading...</section>
+        <section className="flex-1 p-4 pt-16 md:p-8">Loading...</section>
       </main>
     );
   }
@@ -216,7 +216,7 @@ export default function InvoiceDetailPage() {
     return (
       <main className="flex min-h-screen bg-gray-100">
         <Sidebar />
-        <section className="flex-1 p-8">
+        <section className="flex-1 p-4 pt-16 md:p-8">
           <p className="text-red-600">{error || 'Invoice not found'}</p>
         </section>
       </main>
@@ -272,7 +272,7 @@ export default function InvoiceDetailPage() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-8">
+      <section className="flex-1 p-4 pt-16 md:p-8">
         <button
           onClick={() => router.push('/invoices')}
           className="text-sm text-gray-600 hover:text-black mb-3"

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
@@ -8,7 +9,6 @@ import { useCurrentUser, type Role } from '@/lib/user-context';
 import NotificationBell from './NotificationBell';
 
 // Each nav item declares which roles are allowed to see it.
-// `null` in `roles` would mean "everyone" — we use explicit lists for clarity.
 interface NavItem {
   label: string;
   href: string;
@@ -16,30 +16,48 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // UPLOADERs don't get a Dashboard — that page shows monetary totals
-  // (month spend, overdue amounts, etc.) which they explicitly must
-  // not see. They jump straight to the Upload page on login.
   { label: 'Dashboard',    href: '/dashboard',    roles: ['USER', 'REPORTING', 'ADMIN'] },
-  // Transactions = the bank-statement feed (debits + amounts). Hidden
-  // from UPLOADERs because they shouldn't see card balances at all.
   { label: 'Transactions', href: '/transactions', roles: ['USER', 'REPORTING', 'ADMIN'] },
-  // Invoices: UPLOADER sees this BUT the page itself filters to only
-  // invoices they uploaded and hides totals (handled in invoices/page).
   { label: 'Invoices',     href: '/invoices',     roles: ['USER', 'UPLOADER', 'REPORTING', 'ADMIN'] },
   { label: 'Upload',       href: '/upload',       roles: ['USER', 'UPLOADER', 'REPORTING', 'ADMIN'] },
-  // Cards: managed by privileged users only — plain employees don't
-  // need to see the company-wide card directory.
   { label: 'Cards',        href: '/cards',        roles: ['REPORTING', 'ADMIN'] },
   { label: 'Reports',      href: '/reports',      roles: ['REPORTING', 'ADMIN'] },
   { label: 'Admin',        href: '/admin',        roles: ['ADMIN'] },
-  // Stub destination — page content arrives in step 33.
   { label: 'Settings',     href: '/admin/settings', roles: ['ADMIN'] },
 ];
 
+/**
+ * Responsive sidebar.
+ *
+ * Desktop (≥ md):  sticky on the left, always visible, 16rem wide.
+ * Mobile  (< md):  hidden by default. A floating hamburger button in
+ *                  the top-left corner opens the sidebar as a slide-in
+ *                  drawer with a backdrop. The notification bell
+ *                  appears in the same fixed top bar as the hamburger
+ *                  so users don't have to open the drawer to see it.
+ */
 export default function Sidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, loading } = useCurrentUser();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Auto-close the drawer when the user navigates somewhere.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  // Body scroll lock while the mobile drawer is open — otherwise the
+  // page can scroll behind the overlay, which feels broken.
+  useEffect(() => {
+    if (mobileOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = prev;
+      };
+    }
+  }, [mobileOpen]);
 
   async function handleLogout() {
     await logoutUser();
@@ -55,67 +73,153 @@ export default function Sidebar() {
   );
 
   return (
-    // sticky top-0 + h-screen pins the sidebar to the viewport so it
-    // doesn't grow with the page. The nav scrolls internally if it
-    // ever overflows, leaving the logout button anchored at the bottom
-    // of the visible sidebar regardless of page scroll.
-    <aside className="w-64 bg-black text-white sticky top-0 h-screen p-6 flex flex-col">
-      <div className="mb-10 flex-shrink-0">
-        <div className="flex justify-between items-start">
-          <Link href="/dashboard" className="block flex-1">
-            <Image
-              src="/fusion-logo.png"
-              alt="FUSION"
-              width={200}
-              height={50}
-              priority
-              className="w-full h-auto"
-            />
-            <p className="text-xs text-gray-400 mt-2 tracking-widest uppercase">
-              FFG Recon System
-            </p>
-          </Link>
+    <>
+      {/* Mobile-only floating controls — hamburger on the left, bell on
+          the right. Both fixed to the viewport with high z-index so they
+          sit above page content. Hidden on desktop where the sidebar is
+          always visible. */}
+      <div className="md:hidden fixed top-3 left-3 z-30">
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="bg-black text-white p-2.5 rounded-lg shadow-lg active:opacity-80"
+          aria-label="Open menu"
+        >
+          <HamburgerIcon />
+        </button>
+      </div>
+      <div className="md:hidden fixed top-3 right-3 z-30">
+        <div className="bg-black text-white rounded-lg shadow-lg p-1">
           <NotificationBell />
         </div>
       </div>
 
-      {/* overflow-y-auto so a future longer nav scrolls inside the nav
-          region instead of pushing the logout button off-screen. */}
-      <nav className="space-y-1 flex-1 overflow-y-auto -mr-2 pr-2">
-        {visibleItems.map((item) => {
-          const isActive = pathname.startsWith(item.href);
-          return (
-            <Link key={item.href} href={item.href}>
-              <div
-                className={`p-3 rounded-lg cursor-pointer transition border-l-2 ${
-                  isActive
-                    ? 'bg-white/10 font-semibold border-orange-500 text-white'
-                    : 'border-transparent hover:bg-white/5 text-gray-200'
-                }`}
-              >
-                {item.label}
-              </div>
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* Tiny "Logged in as" footer so users can sanity-check their role */}
-      {user && (
-        <div className="mb-3 pt-3 border-t border-white/10 flex-shrink-0">
-          <p className="text-xs text-gray-400 truncate">{user.name}</p>
-          <p className="text-[10px] text-gray-500 uppercase tracking-wider">
-            {user.role}
-          </p>
-        </div>
+      {/* Backdrop — only when drawer is open on mobile */}
+      {mobileOpen && (
+        <div
+          onClick={() => setMobileOpen(false)}
+          className="md:hidden fixed inset-0 bg-black/60 z-40"
+          aria-hidden="true"
+        />
       )}
 
-      <div
-        onClick={handleLogout}
-        className="hover:bg-red-600/30 p-3 rounded-lg cursor-pointer text-red-300 flex-shrink-0"
+      <aside
+        className={[
+          'w-64 bg-black text-white p-6 flex flex-col',
+          // Mobile: full-height fixed drawer that slides in from the left.
+          'fixed inset-y-0 left-0 z-50 h-screen transform transition-transform duration-200 ease-out',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full',
+          // Desktop: revert to sticky in-flow sidebar.
+          'md:translate-x-0 md:sticky md:top-0 md:z-auto md:h-screen',
+        ].join(' ')}
       >
-        Logout
-      </div>
-    </aside>
+        <div className="mb-10 flex-shrink-0">
+          <div className="flex justify-between items-start">
+            <Link href="/dashboard" className="block flex-1">
+              <Image
+                src="/fusion-logo.png"
+                alt="FUSION"
+                width={200}
+                height={50}
+                priority
+                className="w-full h-auto"
+              />
+              <p className="text-xs text-gray-400 mt-2 tracking-widest uppercase">
+                FFG Recon System
+              </p>
+            </Link>
+            {/* Bell visible on desktop (inside the sidebar header);
+                on mobile it's in the fixed top-right corner instead. */}
+            <div className="hidden md:block">
+              <NotificationBell />
+            </div>
+            {/* Close button visible on mobile only */}
+            <button
+              onClick={() => setMobileOpen(false)}
+              className="md:hidden text-white/70 hover:text-white p-2 -mt-1 -mr-1"
+              aria-label="Close menu"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+        </div>
+
+        {/* overflow-y-auto so a future longer nav scrolls inside the nav
+            region instead of pushing the logout button off-screen. */}
+        <nav className="space-y-1 flex-1 overflow-y-auto -mr-2 pr-2">
+          {visibleItems.map((item) => {
+            const isActive = pathname.startsWith(item.href);
+            return (
+              <Link key={item.href} href={item.href}>
+                <div
+                  className={`p-3 rounded-lg cursor-pointer transition border-l-2 ${
+                    isActive
+                      ? 'bg-white/10 font-semibold border-orange-500 text-white'
+                      : 'border-transparent hover:bg-white/5 text-gray-200'
+                  }`}
+                >
+                  {item.label}
+                </div>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Tiny "Logged in as" footer so users can sanity-check their role */}
+        {user && (
+          <div className="mb-3 pt-3 border-t border-white/10 flex-shrink-0">
+            <p className="text-xs text-gray-400 truncate">{user.name}</p>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">
+              {user.role}
+            </p>
+          </div>
+        )}
+
+        <div
+          onClick={handleLogout}
+          className="hover:bg-red-600/30 p-3 rounded-lg cursor-pointer text-red-300 flex-shrink-0"
+        >
+          Logout
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// ---------- Inline icons ----------
+
+function HamburgerIcon() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   );
 }
