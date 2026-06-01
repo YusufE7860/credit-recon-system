@@ -131,16 +131,105 @@ export class StatementsService {
     return statement;
   }
 
+  // Delete a statement AND all its transactions in one atomic operation.
+  //   - Any invoices matched to those transactions get unlinked first
+  //     (transactionId=null, status=UNMATCHED) so the FK delete can
+  //     proceed without violating the @unique constraint on Invoice.
+  //   - Transactions get hard-deleted (the schema's onDelete: SetNull
+  //     would orphan them, which isn't what the user wants).
+  //   - The Statement row itself is deleted last.
+  //   - The source file on disk is removed last of all.
   async delete(id: string) {
     const statement = await this.getById(id);
 
-    // Remove the CSV from disk.
+    // Collect the txn IDs upfront — used for both the invoice-unmatch
+    // step and the actual delete.
+    const txnIds = (
+      await this.prisma.transaction.findMany({
+        where: { statementId: id },
+        select: { id: true },
+      })
+    ).map((t) => t.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (txnIds.length > 0) {
+        // 1. Reset any invoices that pointed at these transactions.
+        //    Otherwise the transaction.delete below fails with an FK
+        //    constraint violation (Invoice.transactionId is @unique).
+        await tx.invoice.updateMany({
+          where: { transactionId: { in: txnIds } },
+          data: {
+            transactionId: null,
+            matchedAt: null,
+            status: 'UNMATCHED',
+          },
+        });
+
+        // 2. Hard-delete the transactions themselves.
+        await tx.transaction.deleteMany({
+          where: { id: { in: txnIds } },
+        });
+      }
+
+      // 3. Delete the parent Statement row.
+      await tx.statement.delete({ where: { id } });
+    });
+
+    // 4. Remove the source file from disk last so a DB failure above
+    //    doesn't leave us with a deleted file but a half-deleted record.
     if (statement.filePath) {
       const abs = path.join(process.cwd(), 'uploads', statement.filePath);
-      if (fs.existsSync(abs)) fs.unlinkSync(abs);
+      if (fs.existsSync(abs)) {
+        try {
+          fs.unlinkSync(abs);
+        } catch (err) {
+          this.logger.warn(
+            `Statement file unlink failed: ${(err as Error).message}`,
+          );
+        }
+      }
     }
 
-    return this.prisma.statement.delete({ where: { id } });
+    return {
+      success: true,
+      deletedTransactionCount: txnIds.length,
+    };
+  }
+
+  // Return the absolute path + MIME type for a statement's source file
+  // so the controller can stream it back. Used by the "View PDF" button
+  // on the Reports → Statements tab.
+  async getFilePath(
+    id: string,
+    currentUser: JwtUser,
+  ): Promise<{ absolutePath: string; mimeType: string; originalName: string }> {
+    const statement = await this.getById(id, currentUser);
+    if (!statement.filePath) {
+      throw new NotFoundException('Statement has no source file on disk.');
+    }
+    const absolutePath = path.join(
+      process.cwd(),
+      'uploads',
+      statement.filePath,
+    );
+    if (!fs.existsSync(absolutePath)) {
+      throw new NotFoundException(
+        'Statement file is missing on disk — was it removed manually?',
+      );
+    }
+    // Cheap MIME sniff by extension; we only accept CSV + PDF on upload.
+    const ext = path.extname(statement.filePath).toLowerCase();
+    const mimeType =
+      ext === '.pdf'
+        ? 'application/pdf'
+        : ext === '.csv'
+        ? 'text/csv'
+        : 'application/octet-stream';
+    return {
+      absolutePath,
+      mimeType,
+      originalName: statement.statementName + ext,
+    };
   }
 
   // Upload + parse + import in one operation. Dispatches to CSV or PDF

@@ -145,6 +145,61 @@ export default function ReportsPage() {
   // we want every uploaded statement listed, not just those in range.
   const [statements, setStatements] = useState<StatementRow[]>([]);
   const [statementsLoading, setStatementsLoading] = useState(false);
+  // Which statement row is currently being deleted/viewed — used to
+  // disable its buttons + dim the row.
+  const [statementBusyId, setStatementBusyId] = useState<string | null>(null);
+
+  // Open the original PDF / CSV in a new tab. Uses fetch + blob URL so
+  // the auth cookie travels — a plain anchor link would skip credentials.
+  async function viewStatementFile(s: StatementRow) {
+    setStatementBusyId(s.id);
+    setError('');
+    try {
+      const apiUrl =
+        process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+      const res = await fetch(`${apiUrl}/statements/${s.id}/file`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      // Open in a new tab. We don't revoke the blob URL immediately
+      // because the new tab still needs it — browsers GC it on tab close.
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError((err as Error).message || 'Failed to load statement file');
+    } finally {
+      setStatementBusyId(null);
+    }
+  }
+
+  // Delete a statement AND every transaction it imported. The backend
+  // unlinks any matched invoices first. Asks for confirmation because
+  // this is destructive and not undoable.
+  async function deleteStatement(s: StatementRow) {
+    if (
+      !confirm(
+        `Delete "${s.statementName}"?\n\n` +
+          `This removes the statement, its ${s.importedCount} transaction${s.importedCount === 1 ? '' : 's'}, ` +
+          `and unlinks any matched invoices (those invoices go back to UNMATCHED). ` +
+          `This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setStatementBusyId(s.id);
+    setError('');
+    try {
+      await api(`/statements/${s.id}`, { method: 'DELETE' });
+      // Refresh the table from the server so the count is authoritative.
+      const fresh = await api<StatementRow[]>('/statements');
+      setStatements(fresh);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Delete failed');
+    } finally {
+      setStatementBusyId(null);
+    }
+  }
 
   // Recon snapshots tab.
   const [reconReports, setReconReports] = useState<ReconReportRow[]>([]);
@@ -599,6 +654,10 @@ export default function ReportsPage() {
           <StatementsView
             rows={statements}
             loading={statementsLoading}
+            isAdminLike={isAdminLike}
+            onView={viewStatementFile}
+            onDelete={deleteStatement}
+            busyId={statementBusyId}
           />
         )}
 
@@ -934,10 +993,14 @@ function ReconReportsView({
 }
 
 function StatementsView({
-  rows, loading,
+  rows, loading, isAdminLike, onView, onDelete, busyId,
 }: {
   rows: StatementRow[];
   loading: boolean;
+  isAdminLike: boolean;
+  onView: (s: StatementRow) => void;
+  onDelete: (s: StatementRow) => void;
+  busyId: string | null;
 }) {
   if (loading) {
     return <p className="text-sm text-gray-600">Loading statements...</p>;
@@ -960,11 +1023,17 @@ function StatementsView({
             <th className="text-right p-3">Imported</th>
             <th className="text-right p-3">Skipped</th>
             <th className="text-left p-3">Uploaded</th>
+            {isAdminLike && (
+              <th className="text-right p-3">Actions</th>
+            )}
           </tr>
         </thead>
         <tbody>
           {rows.map((s) => (
-            <tr key={s.id} className="border-b">
+            <tr
+              key={s.id}
+              className={`border-b ${busyId === s.id ? 'opacity-40' : ''}`}
+            >
               <td className="p-3 font-medium">{s.statementName}</td>
               <td className="p-3 text-gray-700">{s.bankName ?? '—'}</td>
               <td className="p-3 text-gray-700 whitespace-nowrap">
@@ -986,6 +1055,26 @@ function StatementsView({
               <td className="p-3 text-gray-700 whitespace-nowrap">
                 {new Date(s.createdAt).toLocaleDateString()}
               </td>
+              {isAdminLike && (
+                <td className="p-3 text-right whitespace-nowrap">
+                  <button
+                    onClick={() => onView(s)}
+                    disabled={busyId === s.id}
+                    className="text-xs bg-black text-white px-2.5 py-1.5 rounded hover:opacity-90 mr-2 disabled:opacity-40"
+                    title="Open the original PDF / CSV in a new tab"
+                  >
+                    View
+                  </button>
+                  <button
+                    onClick={() => onDelete(s)}
+                    disabled={busyId === s.id}
+                    className="text-xs bg-white border border-red-300 text-red-600 px-2.5 py-1.5 rounded hover:bg-red-50 disabled:opacity-40"
+                    title="Delete this statement AND every transaction it imported. Unlinks matched invoices first."
+                  >
+                    {busyId === s.id ? 'Deleting...' : 'Delete'}
+                  </button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -1036,7 +1125,7 @@ function CategoryView({ rows, onExport }: { rows: CategoryRow[]; onExport: () =>
                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v: number) => fmtZAR(v)} />
+                <Tooltip formatter={(v) => fmtZAR(Number(v))} />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>

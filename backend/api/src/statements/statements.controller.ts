@@ -5,13 +5,16 @@ import {
   Delete,
   Param,
   Body,
+  Res,
   UseGuards,
   UseInterceptors,
   UploadedFile,
   BadRequestException,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
@@ -52,6 +55,25 @@ export class StatementsController {
   @Get(':id')
   getOne(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.statementsService.getById(id, user);
+  }
+
+  // Stream the original PDF/CSV back to the browser. Browsers display
+  // PDFs inline; CSVs trigger a download. Used by the "View PDF" button
+  // on the Reports > Statements tab.
+  @Get(':id/file')
+  async getFile(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtUser,
+    @Res() res: Response,
+  ) {
+    const { absolutePath, mimeType, originalName } =
+      await this.statementsService.getFilePath(id, user);
+    res.setHeader('Content-Type', mimeType);
+    // ASCII-safe filename for the Content-Disposition header — same
+    // pattern we use on the recon-report download.
+    const safeName = originalName.replace(/[\/\\"]/g, '_').replace(/[^\x20-\x7E]/g, '-');
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    fs.createReadStream(absolutePath).pipe(res);
   }
 
   @Post('upload')

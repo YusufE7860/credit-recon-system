@@ -89,8 +89,27 @@ export class PdfParserService {
     const year = statementDate?.getFullYear() ?? new Date().getFullYear();
 
     // ---- 2. Walk the lines, building card sections ----
+    //
+    // The FNB statement layout is:
+    //   [Card header A] [Cardholder name] [transactions...] [Card Total]
+    //   [Card header B] [Cardholder name] [transactions...] [Card Total]
+    //   ...
+    //   [Cardholder summary block at end — date / name / amount per holder]
+    //   [Payment - Thank You]
+    //   [Closing Balance]
+    //
+    // The trailing summary block matches the same date/name/amount/amount
+    // shape as a real transaction row, so without state we end up
+    // importing every cardholder's monthly total as a fake transaction
+    // (~30 phantom rows on a full statement).
+    //
+    // Fix: track whether we're currently INSIDE a card section. Set true
+    // on a card header, false on "Card Total" or "Closing Balance".
+    // Outside a card section, transaction-shaped lines are noise and
+    // get dropped.
     const cards: ParsedCardSection[] = [];
     let currentCard: ParsedCardSection | null = null;
+    let inCardSection = false;
     // After we see a card header, the NEXT non-empty line is the cardholder name.
     let waitingForName = false;
 
@@ -99,6 +118,13 @@ export class PdfParserService {
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (!line) continue;
+
+      // Closing Balance ends the document — anything below is footer.
+      if (/^closing balance/i.test(line)) {
+        inCardSection = false;
+        // Stop iterating — nothing useful past here.
+        break;
+      }
 
       // Is this a new card section header?
       const cardMatch = line.match(CARD_HEADER_RE);
@@ -115,6 +141,7 @@ export class PdfParserService {
           transactions: [],
         };
         waitingForName = true;
+        inCardSection = true;
         continue;
       }
 
@@ -129,8 +156,16 @@ export class PdfParserService {
         continue;
       }
 
+      // "Card Total" closes the current section. The cardholder
+      // summary block follows after the LAST card total, and we don't
+      // want any of those rows interpreted as transactions.
+      if (/^card total/i.test(line)) {
+        inCardSection = false;
+        continue;
+      }
+
       // Inside a card section — look for transaction rows.
-      if (currentCard) {
+      if (currentCard && inCardSection) {
         const txn = this.tryParseTransaction(line, year);
         if (txn) {
           currentCard.transactions.push(txn);
