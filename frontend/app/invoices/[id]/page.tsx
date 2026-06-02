@@ -74,6 +74,74 @@ export default function InvoiceDetailPage() {
   const [requestFields, setRequestFields] = useState('');
   const [requestBusy, setRequestBusy] = useState(false);
 
+  // Manual-match modal state. Surfaced from the Reconciliation panel
+  // when the invoice is PENDING / UNMATCHED — accountants pick a
+  // specific transaction to link the invoice to.
+  type UnmatchedCandidate = {
+    id: string;
+    transactionDate: string;
+    merchant: string;
+    amount: number;
+    cardLast4: string | null;
+    category: string | null;
+    description: string | null;
+  };
+  const [matchOpen, setMatchOpen] = useState(false);
+  const [matchCandidates, setMatchCandidates] = useState<UnmatchedCandidate[]>([]);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [matchSearch, setMatchSearch] = useState('');
+  const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
+
+  // Fetch unmatched transactions visible to this user.
+  // Called every time the modal opens so the list is fresh (avoids
+  // showing a transaction that someone else just matched).
+  async function loadUnmatchedCandidates() {
+    if (!id) return;
+    setMatchLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ invoiceId: id });
+      const data = await api<UnmatchedCandidate[]>(
+        `/reconciliation/unmatched-transactions?${params}`,
+      );
+      setMatchCandidates(data);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to load transactions',
+      );
+    } finally {
+      setMatchLoading(false);
+    }
+  }
+
+  // Confirm the match. Backend rejects if either side is already
+  // matched, so we surface that as an error and refresh the list.
+  async function confirmManualMatch(transactionId: string) {
+    if (!invoice) return;
+    setMatchBusyId(transactionId);
+    setError('');
+    setMessage('');
+    try {
+      await api('/reconciliation/match', {
+        method: 'POST',
+        json: { invoiceId: invoice.id, transactionId },
+      });
+      // Refresh the whole invoice so the Reconciliation panel flips to
+      // the matched-state UI with the linked transaction details.
+      const updated = await api<Invoice>(`/invoices/${invoice.id}`);
+      setInvoice(updated);
+      setMatchOpen(false);
+      setMessage('Matched to transaction.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Match failed');
+      // Reload candidates — the transaction might have been taken since
+      // the modal opened.
+      await loadUnmatchedCandidates();
+    } finally {
+      setMatchBusyId(null);
+    }
+  }
+
   // Fetch invoice + file blob.
   useEffect(() => {
     if (!id) return;
@@ -550,11 +618,24 @@ export default function InvoiceDetailPage() {
                     </button>
                   </div>
                 ) : (
-                  <p className="text-gray-400 text-sm">
-                    Not matched to any transaction yet. Run reconciliation
-                    from the dashboard, or manually link from the
-                    transactions page.
-                  </p>
+                  <div>
+                    <p className="text-gray-500 text-sm mb-3">
+                      Not matched to any transaction yet.
+                      {invoice.status === 'UNMATCHED' &&
+                        ' Auto-matching ran but found no candidate.'}
+                      {invoice.status === 'PENDING' &&
+                        ' Reconciliation hasn’t been run on this period yet.'}
+                    </p>
+                    <button
+                      onClick={() => {
+                        setMatchOpen(true);
+                        loadUnmatchedCandidates();
+                      }}
+                      className="bg-orange-500 text-white text-sm px-4 py-2 rounded-lg hover:bg-orange-600"
+                    >
+                      Match to a transaction
+                    </button>
+                  </div>
                 )}
               </div>
             )}

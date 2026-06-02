@@ -4,6 +4,7 @@ import {
   Post,
   Param,
   Body,
+  Query,
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
@@ -44,6 +45,17 @@ export class ReconciliationController {
   @Roles(Role.ADMIN, Role.REPORTING)
   stats() {
     return this.reconService.getStats();
+  }
+
+  // GET /reconciliation/unmatched-transactions?invoiceId=...
+  // Returns the list of unmatched transactions the user can manually
+  // match against. Used to populate the manual-match picker modal.
+  @Get('unmatched-transactions')
+  unmatchedTransactions(
+    @CurrentUser() user: JwtUser,
+    @Query('invoiceId') invoiceId?: string,
+  ) {
+    return this.reconService.listUnmatchedTransactions(user, invoiceId);
   }
 
   // POST /reconciliation/match

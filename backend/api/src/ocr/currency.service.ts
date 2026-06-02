@@ -160,20 +160,45 @@ export class CurrencyService {
   //   - The currency isn't on Frankfurter's list (SAR, AED)
   //   - The API is down or the date is out of its range (future / pre-1999)
   // In both cases the source field tells you what happened.
+  //
+  // BANK MARKUP: published ECB rates are mid-market. South African card
+  // issuers add a 2–3.5% markup on every foreign-currency transaction
+  // (the "currency conversion fee"), so the rate the BANK charges is
+  // always higher than the published rate. We multiply the base rate by
+  // (1 + markup/100) so invoice.totalZAR comes out close to what the
+  // bank actually charged — the matching engine compares against that
+  // figure, so it has to match the bank's reality. Configurable via
+  // FX_MARKUP_PERCENT in Settings; defaults to 2.5%.
   async toZARAtDate(
     amount: number,
     currency: Currency,
     date: Date,
   ): Promise<{ amount: number; rate: number; source: string }> {
-    const { rate, source } = await this.historicalFx.getRateToZARAt(
+    const { rate: baseRate, source } = await this.historicalFx.getRateToZARAt(
       date,
       currency,
       () => this.getRateToZAR(currency),
     );
+    // Markup is stored as a percent. 2.5 → multiply by 1.025.
+    // Skip for ZAR → ZAR (rate = 1, no markup to apply).
+    const markupPercent =
+      currency === 'ZAR'
+        ? 0
+        : this.settings.getNumber(
+            SETTING_KEYS.FX_MARKUP_PERCENT,
+            DEFAULT_FX_MARKUP_PERCENT,
+          );
+    const adjustedRate = baseRate * (1 + markupPercent / 100);
     return {
-      amount: Math.round(amount * rate * 100) / 100,
-      rate,
+      amount: Math.round(amount * adjustedRate * 100) / 100,
+      rate: adjustedRate,
       source,
     };
   }
 }
+
+// Default markup % when no Setting row exists. 2.5% is a reasonable
+// middle of the road for SA card issuers (FNB / Standard Bank / Absa
+// typically charge 2–3.5%). Operators can override via the Settings
+// page or by writing a DB row directly.
+const DEFAULT_FX_MARKUP_PERCENT = 2.5;

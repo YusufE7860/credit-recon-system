@@ -420,6 +420,69 @@ export class ReconciliationService {
     });
   }
 
+  // List transactions that aren't matched to any invoice yet. Feeds
+  // the "manual match" picker on the invoice detail page.
+  //
+  // Scope:
+  //   - USER: only their own transactions
+  //   - UPLOADER: same scope as their visible invoices — transactions
+  //     belonging to any user they're assigned to (for assistants)
+  //   - REPORTING/ADMIN: every unmatched transaction
+  //
+  // When `invoiceId` is supplied, we narrow further:
+  //   - To transactions belonging to the SAME owning user as the invoice
+  //     (so an admin matching for John doesn't accidentally pick Jane's
+  //     transaction; correct in 99% of real cases).
+  async listUnmatchedTransactions(
+    currentUser: JwtUser,
+    invoiceId?: string,
+  ) {
+    let userScopeFilter: { userId?: string } = {};
+
+    if (currentUser.role === 'UPLOADER') {
+      // UPLOADER doesn't see anyone's transactions by default — manual
+      // matching is an accountant workflow, not an uploader one.
+      return [];
+    }
+    if (!isPrivileged(currentUser.role)) {
+      userScopeFilter = { userId: currentUser.sub };
+    }
+
+    // Narrow to the invoice's owner so admins don't accidentally
+    // cross-match users.
+    if (invoiceId) {
+      const inv = await this.prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { userId: true },
+      });
+      if (inv?.userId) {
+        userScopeFilter = { userId: inv.userId };
+      }
+    }
+
+    return this.prisma.transaction.findMany({
+      where: {
+        ...userScopeFilter,
+        matched: false,
+        // Skip refunds — invoices shouldn't match negative-amount rows.
+        amount: { gt: 0 },
+      },
+      orderBy: { transactionDate: 'desc' },
+      // Capped — a giant unmatched pool would slow the picker. Tune up
+      // if real-world usage hits the wall.
+      take: 200,
+      select: {
+        id: true,
+        transactionDate: true,
+        merchant: true,
+        amount: true,
+        cardLast4: true,
+        category: true,
+        description: true,
+      },
+    });
+  }
+
   // Break an existing match — the invoice goes back to UNMATCHED.
   // USERs can only unlink their own invoices; admins/reporting can unlink any.
   async unlink(invoiceId: string, currentUser: JwtUser) {

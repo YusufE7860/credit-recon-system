@@ -14,7 +14,8 @@ export const SETTING_KEYS = {
   SMTP_PASS: 'smtp.pass',
   MAIL_FROM: 'mail.from',
 
-  // FX rates (per ISO currency code → ZAR)
+  // FX rates (per ISO currency code → ZAR). Used only as a fallback
+  // when historical lookup fails — see HistoricalFxService.
   FX_USD: 'fx.usd',
   FX_EUR: 'fx.eur',
   FX_GBP: 'fx.gbp',
@@ -25,6 +26,15 @@ export const SETTING_KEYS = {
   FX_AUD: 'fx.aud',
   FX_CAD: 'fx.cad',
   FX_INR: 'fx.inr',
+
+  // Bank markup on foreign-currency credit card transactions.
+  // Set as a PERCENT — e.g. 2.5 means the bank charges 2.5% above
+  // the published mid-market rate. South African card issuers
+  // typically charge 2.0–3.5%. Applied to every rate we look up so
+  // invoice.totalZAR comes out close to what the bank actually
+  // charged, which is what the reconciliation matcher compares
+  // against. Set to 0 to use the raw published rate.
+  FX_MARKUP_PERCENT: 'fx.markupPercent',
 
   // Reconciliation thresholds
   RECON_AMOUNT_TOLERANCE: 'recon.amountTolerance',

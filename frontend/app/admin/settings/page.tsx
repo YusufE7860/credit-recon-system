@@ -16,6 +16,7 @@ const KEYS = {
   FX_USD: 'fx.usd', FX_EUR: 'fx.eur', FX_GBP: 'fx.gbp',
   FX_CNY: 'fx.cny', FX_JPY: 'fx.jpy', FX_SAR: 'fx.sar',
   FX_AED: 'fx.aed', FX_AUD: 'fx.aud', FX_CAD: 'fx.cad', FX_INR: 'fx.inr',
+  FX_MARKUP_PERCENT: 'fx.markupPercent',
   RECON_AMOUNT_TOLERANCE: 'recon.amountTolerance',
   RECON_DATE_TOLERANCE_DAYS: 'recon.dateToleranceDays',
   RECON_MERCHANT_THRESHOLD: 'recon.merchantThreshold',
@@ -98,8 +99,25 @@ export default function SettingsPage() {
 
             {tab === 'fx' && (
               <>
-                <p className="text-xs text-gray-600 -mt-2 mb-2">
-                  Rates convert invoices in foreign currencies into ZAR for matching against bank statements. Update when rates drift significantly.
+                <Field
+                  label="Bank markup (%)"
+                  type="number"
+                  value={values[KEYS.FX_MARKUP_PERCENT]}
+                  onChange={(v) => set(KEYS.FX_MARKUP_PERCENT, Number(v))}
+                  placeholder="2.5"
+                />
+                <p className="text-xs text-gray-500 -mt-3 mb-3">
+                  Applied to EVERY foreign-currency invoice. SA card issuers
+                  add 2–3.5% on top of the published rate when they convert.
+                  Without this markup, invoice ZAR amounts will be ~3% lower
+                  than the actual bank charge and won&apos;t auto-match.
+                  Set to 0 to use the raw published rate.
+                </p>
+                <hr className="my-2" />
+                <p className="text-xs text-gray-600 mb-2">
+                  Fallback rates below are only used when the historical FX
+                  lookup fails (Frankfurter unreachable, or the currency
+                  isn&apos;t on its list — SAR / AED).
                 </p>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="USD → ZAR" type="number" value={values[KEYS.FX_USD]} onChange={(v) => set(KEYS.FX_USD, Number(v))} />
