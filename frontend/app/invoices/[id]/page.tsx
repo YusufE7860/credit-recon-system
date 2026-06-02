@@ -120,19 +120,18 @@ export default function InvoiceDetailPage() {
     setMessage('');
 
     // Build payload of only changed fields.
+    //
+    // Amount fields (total/vat/subtotal) are NEVER sent — they're
+    // locked everywhere and the backend rejects them anyway. The
+    // remaining "financial" text fields (supplier/invoiceNumber) only
+    // go when the invoice is flagged for review (OCR-confidence path).
     const payload: Record<string, unknown> = {};
     const editable = ['category', 'storeAllocation', 'notes'] as const;
     for (const k of editable) {
       if (edits[k] !== invoice[k]) payload[k] = edits[k];
     }
-    // Financial edits only allowed if requiresReview.
     if (invoice.requiresReview) {
-      const finFields = [
-        'supplier',
-        'invoiceNumber',
-        'total',
-        'vat',
-      ] as const;
+      const finFields = ['supplier', 'invoiceNumber'] as const;
       for (const k of finFields) {
         if (edits[k] !== invoice[k]) payload[k] = edits[k];
       }
@@ -412,24 +411,29 @@ export default function InvoiceDetailPage() {
                 readOnly
               />
               {!hideMoney && (
-                <div className="grid grid-cols-2 gap-3">
-                  <DetailField
-                    label={`Total (${invoice.currency})`}
-                    value={String(edits.total ?? 0)}
-                    onChange={(v) =>
-                      setEdits({ ...edits, total: parseFloat(v) || 0 })
-                    }
-                    readOnly={financialsLocked}
-                  />
-                  <DetailField
-                    label={`VAT (${invoice.currency})`}
-                    value={String(edits.vat ?? 0)}
-                    onChange={(v) =>
-                      setEdits({ ...edits, vat: parseFloat(v) || 0 })
-                    }
-                    readOnly={financialsLocked}
-                  />
-                </div>
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Amounts are LOCKED for everyone, no matter their
+                        role or any unlock state. They must match the
+                        original invoice. Backend rejects any PATCH that
+                        tries to change them — the readOnly here matches
+                        that contract. */}
+                    <DetailField
+                      label={`Total (${invoice.currency})`}
+                      value={String(edits.total ?? 0)}
+                      readOnly
+                    />
+                    <DetailField
+                      label={`VAT (${invoice.currency})`}
+                      value={String(edits.vat ?? 0)}
+                      readOnly
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500 -mt-2 mb-3">
+                    Amounts can&apos;t be edited — they must match the
+                    original invoice. If they&apos;re wrong, delete and re-upload.
+                  </p>
+                </>
               )}
 
               {/* Conversion banner — only shown when currency is not ZAR.

@@ -152,16 +152,27 @@ export class TransactionsService {
   // We DON'T allow changing userId here on purpose; routing a transaction
   // to a different user is a Card concern (re-assign the card), not a
   // per-transaction one.
+  //
+  // Amount is LOCKED for everyone, including admin. Bank statements are
+  // the source of truth for amounts and we don't let anyone "correct"
+  // them through the UI — if a row is wrong, the statement upload was
+  // wrong; delete + re-upload is the workflow.
   async updateTransaction(id: string, input: UpdateTransactionInput) {
     // Verify existence first so we throw a clean 404.
     const existing = await this.prisma.transaction.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException(`Transaction ${id} not found`);
 
+    if (input.amount !== undefined) {
+      throw new BadRequestException(
+        'Transaction amounts cannot be edited. They must match the bank statement. If the value is wrong, delete the statement and re-upload it.',
+      );
+    }
+
     return this.prisma.transaction.update({
       where: { id },
       data: {
         merchant: input.merchant,
-        amount: input.amount,
+        // amount intentionally NOT writable — rejected above.
         category: input.category,
         description: input.description,
         transactionDate: input.transactionDate

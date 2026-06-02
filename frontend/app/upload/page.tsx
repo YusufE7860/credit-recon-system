@@ -36,6 +36,43 @@ interface QueueItem {
   storeAllocation: string;
 }
 
+// `crypto.randomUUID()` only exists in *secure contexts* (HTTPS or
+// `localhost`). On plain HTTP via raw IP — which is exactly the
+// IP-only test deployment — the browser doesn't expose it and calling
+// it throws TypeError. That kills addFilesToQueue silently, which
+// looks like "the upload doesn't work".
+//
+// This helper tries the native method first (so production HTTPS gets
+// proper UUIDs), then a crypto.getRandomValues-based UUID v4 fallback
+// (works in non-secure contexts on all modern browsers), then a
+// Math.random fallback as the absolute last resort. The ID is only
+// used as a React key for the queue row — uniqueness within the
+// session is all that matters, not cryptographic strength.
+function makeQueueId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      // RFC 4122 v4: 16 random bytes, set version + variant nibbles.
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  } catch {
+    /* fall through */
+  }
+  // Last resort — not RFC-compliant but unique enough for a queue key.
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const { user } = useCurrentUser();
@@ -135,21 +172,49 @@ export default function UploadPage() {
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
   function addFilesToQueue(files: FileList | null) {
-    if (!files) return;
+    if (!files || files.length === 0) {
+      // iOS PWA mode occasionally fires `change` with no files attached
+      // — surface a hint rather than silently doing nothing.
+      setError(
+        'No file was captured. If this keeps happening, try the gallery picker instead.',
+      );
+      return;
+    }
     // Snapshot the current batch defaults into each new item so later
     // changes to the top-of-page dropdowns don't retroactively rewrite
     // earlier files in the queue. Items added with no default selected
     // keep empty strings (resolved as "leave blank" at upload time).
-    const newItems: QueueItem[] = Array.from(files).map((f) => ({
-      id: crypto.randomUUID(),
-      file: f,
-      previewUrl: URL.createObjectURL(f),
-      status: 'pending',
-      reason: '',
-      category: batchCategory,
-      storeAllocation: batchStore,
-    }));
-    setQueue((q) => [...q, ...newItems]);
+    const newItems: QueueItem[] = [];
+    for (const f of Array.from(files)) {
+      try {
+        newItems.push({
+          id: makeQueueId(),
+          file: f,
+          previewUrl: URL.createObjectURL(f),
+          status: 'pending',
+          reason: '',
+          category: batchCategory,
+          storeAllocation: batchStore,
+        });
+      } catch (err) {
+        // URL.createObjectURL can throw in some sandboxed contexts.
+        // Keep the file but skip the preview — upload still works.
+        console.error('Failed to create preview URL:', err);
+        newItems.push({
+          id: makeQueueId(),
+          file: f,
+          previewUrl: '',
+          status: 'pending',
+          reason: '',
+          category: batchCategory,
+          storeAllocation: batchStore,
+        });
+      }
+    }
+    if (newItems.length > 0) {
+      setQueue((q) => [...q, ...newItems]);
+      setError('');
+    }
   }
 
   function removeFromQueue(id: string) {
@@ -474,11 +539,14 @@ export default function UploadPage() {
                 </button>
               </div>
 
-              {/* Hidden inputs — triggered by the buttons above. */}
+              {/* Hidden inputs — triggered by the buttons above.
+                  HEIC/HEIF added explicitly because iPhones default to
+                  those formats and a bare `image/*` filter on some
+                  iOS versions silently rejects them. */}
               <input
                 ref={cameraInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,image/heic,image/heif"
                 capture="environment"
                 className="hidden"
                 onChange={(e) => {
@@ -490,7 +558,7 @@ export default function UploadPage() {
               <input
                 ref={galleryInputRef}
                 type="file"
-                accept="image/*,application/pdf"
+                accept="image/*,image/heic,image/heif,application/pdf"
                 multiple
                 className="hidden"
                 onChange={(e) => {
@@ -522,19 +590,45 @@ export default function UploadPage() {
                       key={item.id}
                       className="flex items-center gap-3 p-2 rounded-lg border border-gray-200"
                     >
-                      {/* Thumbnail */}
-                      {item.file.type.startsWith('image/') ? (
+                      {/* Thumbnail. HEIC images can't be rendered by
+                          browsers, so we onError-fallback to a small
+                          placeholder rather than showing a broken
+                          (invisible) image element. */}
+                      {item.file.type.startsWith('image/') && item.previewUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={item.previewUrl}
                           alt=""
-                          className="w-14 h-14 object-cover rounded"
+                          className="w-14 h-14 object-cover rounded bg-gray-100"
+                          onError={(e) => {
+                            // Hide the broken image and reveal the
+                            // sibling placeholder underneath.
+                            const el = e.currentTarget;
+                            el.style.display = 'none';
+                            const next = el.nextElementSibling as HTMLElement | null;
+                            if (next) next.style.display = 'flex';
+                          }}
                         />
-                      ) : (
-                        <div className="w-14 h-14 bg-gray-100 rounded flex items-center justify-center text-xs text-gray-500">
-                          PDF
-                        </div>
-                      )}
+                      ) : null}
+                      {/* Placeholder — shown when the file is non-image
+                          (PDF), when no preview URL exists, or when the
+                          img above failed to load (HEIC etc). */}
+                      <div
+                        className="w-14 h-14 bg-gray-100 rounded flex items-center justify-center text-[10px] text-gray-500 uppercase tracking-wider"
+                        style={{
+                          display:
+                            item.file.type.startsWith('image/') && item.previewUrl
+                              ? 'none'
+                              : 'flex',
+                        }}
+                      >
+                        {item.file.type === 'application/pdf'
+                          ? 'PDF'
+                          : item.file.type.includes('heic') ||
+                              item.file.type.includes('heif')
+                            ? 'HEIC'
+                            : 'IMG'}
+                      </div>
 
                       {/* Name + reason input + status */}
                       <div className="flex-1 min-w-0">

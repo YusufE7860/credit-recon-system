@@ -56,6 +56,11 @@ export const ALLOWED_INVOICE_MIME_TYPES = [
   'image/jpeg',
   'image/png',
   'image/webp',
+  // iPhones default to HEIC/HEIF. Accept them on the wire so phone
+  // photos don't get rejected mid-upload; AI OCR still handles them
+  // through Claude's vision endpoint.
+  'image/heic',
+  'image/heif',
   'application/pdf',
 ];
 
@@ -568,13 +573,30 @@ export class InvoicesService {
       currentUser.role === Role.UPLOADER &&
       invoice.uploaderId === currentUser.sub;
 
+    // Amounts (total / VAT / subtotal) are LOCKED for everyone, all
+    // the time. They must match what was on the original invoice or
+    // statement — no role, not even ADMIN, can edit them through the
+    // API. If the OCR captured them wrong, the workflow is delete +
+    // re-upload, not edit-in-place. Rejecting up-front means no
+    // client can sneak an amount change in through a manual PATCH.
+    if (
+      input.total !== undefined ||
+      input.vat !== undefined ||
+      input.subtotal !== undefined
+    ) {
+      throw new ForbiddenException(
+        'Invoice amounts (total, VAT, subtotal) cannot be edited. They must match the original invoice. If the OCR captured them incorrectly, delete the invoice and re-upload.',
+      );
+    }
+
+    // After amount-locking, "financials" here means the remaining
+    // OCR-extracted fields: supplier name, invoice number, invoice
+    // date. Those CAN still be edited (under the same unlock rules
+    // as before), since they're text/dates rather than money figures.
     const editingFinancials =
       input.supplier !== undefined ||
       input.invoiceNumber !== undefined ||
-      input.invoiceDate !== undefined ||
-      input.total !== undefined ||
-      input.vat !== undefined ||
-      input.subtotal !== undefined;
+      input.invoiceDate !== undefined;
 
     const editingMetadata =
       input.category !== undefined ||
@@ -664,10 +686,10 @@ export class InvoicesService {
           invoiceDate: input.invoiceDate
             ? new Date(input.invoiceDate)
             : undefined,
-          total: input.total,
-          vat: input.vat,
-          subtotal: input.subtotal,
-          // Clear requiresReview when the human edits financial fields.
+          // total / vat / subtotal are intentionally NOT in this set —
+          // they're rejected at the top of the method so they never
+          // reach the database.
+          // Clear requiresReview when the human edits supplier/number/date.
           requiresReview: editingFinancials ? false : undefined,
           // Clear the financial unlock when consumed (or when admin edits).
           editUnlockedUntil:

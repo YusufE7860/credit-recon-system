@@ -102,13 +102,14 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        // Open the dropdown DOWN-AND-RIGHT of the bell. The sidebar is
-        // on the left of the page, so right-aligning the dropdown to
-        // the bell makes it extend leftward over the FUSION logo —
-        // which is what we used to do, and looked terrible. left-full
-        // anchors the dropdown's LEFT edge at the bell's RIGHT edge so
-        // it pops out into the main content area.
-        <div className="absolute left-full top-0 ml-2 w-80 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden z-50 border border-gray-200">
+        // Responsive positioning:
+        //   - Mobile: bell lives in the top-right corner (Sidebar.tsx),
+        //     so we drop the panel DOWN-AND-LEFT (right-0 top-full) and
+        //     constrain its width to fit a phone viewport.
+        //   - Desktop: bell sits inside the sidebar (left of the page),
+        //     so we open to the RIGHT of it (left-full top-0) into the
+        //     main content area, with the original 320px width.
+        <div className="absolute right-0 top-full mt-2 w-[calc(100vw-2rem)] max-w-sm md:right-auto md:left-full md:top-0 md:mt-0 md:ml-2 md:w-80 bg-white text-gray-900 rounded-xl shadow-2xl overflow-hidden z-50 border border-gray-200">
           <div className="flex justify-between items-center px-4 py-3 border-b border-gray-200">
             <p className="font-semibold text-sm">Notifications</p>
             {unreadCount > 0 && (
