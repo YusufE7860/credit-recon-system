@@ -642,6 +642,160 @@ export default function InvoiceDetailPage() {
           </div>
         </div>
 
+        {/* Manual-match picker modal — lets the user pick a specific
+            transaction to link this invoice to. Only opened from the
+            Reconciliation panel, which itself only shows the button
+            when the invoice is PENDING / UNMATCHED. */}
+        {matchOpen && (
+          <div
+            className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-2 sm:p-4"
+            onClick={() => matchBusyId === null && setMatchOpen(false)}
+          >
+            <div
+              className="bg-white rounded-xl w-full max-w-2xl shadow-2xl flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-5 border-b border-gray-200 flex-shrink-0">
+                <h3 className="text-lg font-semibold">
+                  Match to a transaction
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Pick the bank transaction that pays for{' '}
+                  <strong>{invoice.supplier}</strong>
+                  {invoice.totalZAR != null && (
+                    <>
+                      {' '}— invoice is{' '}
+                      <strong>R {invoice.totalZAR.toFixed(2)}</strong> on{' '}
+                      {new Date(invoice.invoiceDate).toLocaleDateString()}
+                    </>
+                  )}
+                  . Only unmatched transactions are shown.
+                </p>
+                <input
+                  type="text"
+                  value={matchSearch}
+                  onChange={(e) => setMatchSearch(e.target.value)}
+                  placeholder="Filter by merchant or amount..."
+                  className="mt-3 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+              </div>
+
+              {/* Scrollable list — height-capped so on phones the
+                  modal doesn't blow past the viewport. */}
+              <div className="flex-1 overflow-y-auto">
+                {matchLoading ? (
+                  <p className="p-6 text-sm text-gray-500">Loading...</p>
+                ) : matchCandidates.length === 0 ? (
+                  <p className="p-6 text-sm text-gray-400 text-center">
+                    No unmatched transactions visible. Upload a bank
+                    statement covering this period, or check that the
+                    cardholder is the same on both sides.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-gray-100">
+                    {matchCandidates
+                      .filter((t) => {
+                        if (!matchSearch.trim()) return true;
+                        const needle = matchSearch.trim().toLowerCase();
+                        return (
+                          t.merchant.toLowerCase().includes(needle) ||
+                          t.amount.toFixed(2).includes(needle) ||
+                          (t.description ?? '')
+                            .toLowerCase()
+                            .includes(needle)
+                        );
+                      })
+                      .map((t) => {
+                        const isBusy = matchBusyId === t.id;
+                        // Highlight "looks like a likely match" so the
+                        // accountant doesn't have to scan visually.
+                        // Heuristic: amount within 5% of invoice.totalZAR
+                        // AND date within 7 days of invoice.invoiceDate.
+                        const amtClose =
+                          invoice.totalZAR != null &&
+                          Math.abs(t.amount - invoice.totalZAR) /
+                            Math.max(t.amount, invoice.totalZAR) <
+                            0.05;
+                        const dayMs = 24 * 60 * 60 * 1000;
+                        const dateClose =
+                          Math.abs(
+                            new Date(t.transactionDate).getTime() -
+                              new Date(invoice.invoiceDate).getTime(),
+                          ) <=
+                          7 * dayMs;
+                        const likely = amtClose && dateClose;
+                        return (
+                          <li key={t.id}>
+                            <button
+                              onClick={() => confirmManualMatch(t.id)}
+                              disabled={isBusy || matchBusyId !== null}
+                              className={`w-full text-left p-4 flex items-start gap-3 hover:bg-gray-50 disabled:opacity-40 ${
+                                likely ? 'bg-orange-50/40' : ''
+                              }`}
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-medium truncate">
+                                    {t.merchant}
+                                  </p>
+                                  {likely && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">
+                                      likely
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  {new Date(
+                                    t.transactionDate,
+                                  ).toLocaleDateString()}
+                                  {t.cardLast4 && (
+                                    <> · card …{t.cardLast4}</>
+                                  )}
+                                  {t.category && (
+                                    <> · {t.category}</>
+                                  )}
+                                </p>
+                                {t.description && (
+                                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                    {t.description}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="text-right flex-shrink-0">
+                                <p className="font-semibold">
+                                  R {t.amount.toFixed(2)}
+                                </p>
+                                {isBusy && (
+                                  <p className="text-xs text-orange-600 mt-1">
+                                    Matching...
+                                  </p>
+                                )}
+                              </div>
+                            </button>
+                          </li>
+                        );
+                      })}
+                  </ul>
+                )}
+              </div>
+
+              <div className="p-4 border-t border-gray-200 flex justify-between items-center flex-shrink-0">
+                <p className="text-xs text-gray-500">
+                  {matchCandidates.length} unmatched
+                  {matchSearch.trim() && ' (filtered)'}
+                </p>
+                <button
+                  onClick={() => setMatchOpen(false)}
+                  disabled={matchBusyId !== null}
+                  className="px-4 py-2 text-sm rounded-lg text-gray-700 hover:bg-gray-100"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Edit request modal */}
         {requestOpen && (
           <div
