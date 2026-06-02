@@ -595,7 +595,7 @@ export default function ReportsPage() {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-4 border-b border-gray-300">
+        <div className="flex gap-1 mb-4 border-b border-gray-300 overflow-x-auto">
           <TabButton active={tab === 'summary'}    onClick={() => setTab('summary')}>Summary</TabButton>
           <TabButton active={tab === 'category'}   onClick={() => setTab('category')}>By category</TabButton>
           <TabButton active={tab === 'cardholder'} onClick={() => setTab('cardholder')}>By cardholder</TabButton>
@@ -916,7 +916,7 @@ function ReconReportsView({
     );
   }
   return (
-    <div className="bg-white rounded-xl shadow overflow-hidden">
+    <div className="bg-white rounded-xl shadow overflow-x-auto">
       <table className="w-full">
         <thead className="bg-black text-white">
           <tr>
@@ -1013,7 +1013,7 @@ function StatementsView({
     );
   }
   return (
-    <div className="bg-white rounded-xl shadow overflow-hidden">
+    <div className="bg-white rounded-xl shadow overflow-x-auto">
       <table className="w-full">
         <thead className="bg-black text-white">
           <tr>
@@ -1094,7 +1094,7 @@ function SummaryView({
   return (
     <div>
       <ExportBar label="Summary" onExport={onExport} />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <Stat label="Total spend"      value={fmtZAR(summary.totalSpend)}    sub={`${summary.transactionCount} transactions`} />
         <Stat label="Refunds"          value={fmtZAR(summary.totalRefunds)}  sub="signed negative" />
         <Stat label="Net spend"        value={fmtZAR(summary.netSpend)}      sub="spend + refunds" />
@@ -1130,7 +1130,7 @@ function CategoryView({ rows, onExport }: { rows: CategoryRow[]; onExport: () =>
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="bg-white rounded-xl shadow overflow-x-auto">
             <table className="w-full">
               <thead className="bg-black text-white">
                 <tr>
@@ -1175,7 +1175,7 @@ function CardholderView({
       {rows.length === 0 ? (
         <EmptyState text="No spend in this period." />
       ) : (
-        <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="bg-white rounded-xl shadow overflow-x-auto">
           <table className="w-full">
             <thead className="bg-black text-white">
               <tr>
@@ -1257,7 +1257,7 @@ function UnmatchedView({
               Showing first 500 unmatched items. Narrow the date range to see all.
             </p>
           )}
-          <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="bg-white rounded-xl shadow overflow-x-auto">
             <table className="w-full">
               <thead className="bg-black text-white">
                 <tr>

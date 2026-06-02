@@ -137,7 +137,7 @@ export default function AdminStoresPage() {
         {error && <p className="text-sm text-red-600 bg-red-50 p-3 rounded mb-4">{error}</p>}
         {message && <p className="text-sm text-green-700 bg-green-50 p-3 rounded mb-4">{message}</p>}
 
-        <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="bg-white rounded-xl shadow overflow-x-auto">
           <table className="w-full">
             <thead className="bg-black text-white">
               <tr>

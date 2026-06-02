@@ -243,10 +243,23 @@ export class PdfParserService {
     const lowerBody = body.toLowerCase();
     if (SKIP_DESCRIPTIONS.some((s) => lowerBody.includes(s))) return null;
 
-    // Split body into merchant + location (location is usually the last
-    // 1-3 trailing words, but we don't have a reliable column boundary
-    // from text-only PDF output. Heuristic: split on long run of spaces.)
-    const { merchant, location } = this.splitMerchantLocation(body);
+    // FNB columns are Date | Transaction Details | Loc | Amount | Budget,
+    // but pdf-parse collapses them into single lines. The Loc column
+    // often holds reference codes (long all-digit strings) that get
+    // appended to the merchant body. Strip them BEFORE the merchant/
+    // location split so the merchant stays clean. Example:
+    //   "Dnhgodaddy *#81600775   310858883143"
+    // → strip "310858883143" → "Dnhgodaddy *#81600775"
+    const cleanedBody = this.stripTrailingReference(body);
+
+    // After stripping, if the merchant body has no letters left, the
+    // row is pure parser noise (a Loc-column-only line that the regex
+    // matched by accident). Drop it — better to miss a transaction
+    // than create a phantom one with no merchant.
+    const letterCount = (cleanedBody.match(/[A-Za-z]/g) ?? []).length;
+    if (letterCount < 2) return null;
+
+    const { merchant, location } = this.splitMerchantLocation(cleanedBody);
 
     let amount = this.parseAmount(amountStr) ?? 0;
     // "Cr" suffix = credit / refund — store as negative.
@@ -255,6 +268,25 @@ export class PdfParserService {
     const isFee = FEE_PREFIXES.some((p) => merchant.trimStart().startsWith(p));
 
     return { date, merchant, location, amount, isFee };
+  }
+
+  // Strip a trailing all-digit reference number (4+ digits, typically
+  // the Loc-column value) from a transaction body. Leaves the rest of
+  // the body — including any merchant name and city — alone.
+  // Conservative: only strips when the merchant body has letters earlier
+  // (so a body that is ONLY digits stays as-is and gets rejected later).
+  private stripTrailingReference(body: string): string {
+    const words = body.trim().split(/\s+/);
+    if (words.length < 2) return body.trim();
+
+    // Walk backwards stripping any trailing tokens that are pure digit
+    // runs of 4+ characters. (Shorter runs like "85" could be a real
+    // shop number in the merchant.)
+    let i = words.length;
+    while (i > 1 && /^\d{4,}$/.test(words[i - 1])) {
+      i--;
+    }
+    return words.slice(0, i).join(' ');
   }
 
   private parseDayMonth(s: string, year: number): Date | null {

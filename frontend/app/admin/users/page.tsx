@@ -215,7 +215,7 @@ export default function AdminUsersPage() {
           </p>
         )}
 
-        <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="bg-white rounded-xl shadow overflow-x-auto">
           <table className="w-full">
             <thead className="bg-black text-white">
               <tr>

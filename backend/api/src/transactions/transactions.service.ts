@@ -114,6 +114,20 @@ export class TransactionsService {
     const transactions = await this.prisma.transaction.findMany({
       where: effectiveUserId ? { userId: effectiveUserId } : undefined,
       orderBy: { transactionDate: 'desc' },
+      // Pull the matched invoice's amount so the frontend can render a
+      // side-by-side "statement amount vs invoice amount" view and flag
+      // discrepancies without a second round-trip.
+      include: {
+        invoice: {
+          select: {
+            id: true,
+            supplier: true,
+            total: true,
+            totalZAR: true,
+            currency: true,
+          },
+        },
+      },
     });
 
     // Look up the cards once for all unique last4s, then merge in memory.

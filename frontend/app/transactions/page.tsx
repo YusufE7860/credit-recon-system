@@ -27,6 +27,16 @@ type Transaction = {
   // Card.assignedUser if assigned, else Card.cardholderName (the
   // PDF-parsed placeholder for unassigned cards).
   cardholder: Cardholder;
+  // Linked invoice (when matched). The backend includes it on the
+  // transactions list so we can show the invoice's ZAR figure side-
+  // by-side with the statement figure and flag discrepancies.
+  invoice: {
+    id: string;
+    supplier: string;
+    total: number;
+    totalZAR: number | null;
+    currency: string;
+  } | null;
 };
 
 type UserOption = {
@@ -193,17 +203,21 @@ export default function TransactionsPage() {
           </p>
         )}
 
-        <div className="bg-white rounded-xl shadow overflow-hidden">
-          <table className="w-full">
+        {/* overflow-x-auto lets the table scroll horizontally on phones
+            rather than getting clipped — the table doesn't fit in 360px
+            even with the narrowest columns. */}
+        <div className="bg-white rounded-xl shadow overflow-x-auto">
+          <table className="w-full min-w-[700px]">
             <thead className="bg-black text-white">
               <tr>
-                <th className="text-left p-4">Merchant</th>
-                <th className="text-left p-4">Amount</th>
-                <th className="text-left p-4">Category</th>
-                <th className="text-left p-4">Status</th>
-                {privileged && <th className="text-left p-4">Cardholder</th>}
-                <th className="text-left p-4">Date</th>
-                {isAdmin && <th className="text-right p-4">Actions</th>}
+                <th className="text-left p-4 whitespace-nowrap">Merchant</th>
+                <th className="text-left p-4 whitespace-nowrap">Statement amount</th>
+                <th className="text-left p-4 whitespace-nowrap">Invoice amount</th>
+                <th className="text-left p-4 whitespace-nowrap">Category</th>
+                <th className="text-left p-4 whitespace-nowrap">Status</th>
+                {privileged && <th className="text-left p-4 whitespace-nowrap">Cardholder</th>}
+                <th className="text-left p-4 whitespace-nowrap">Date</th>
+                {isAdmin && <th className="text-right p-4 whitespace-nowrap">Actions</th>}
               </tr>
             </thead>
 
@@ -212,7 +226,7 @@ export default function TransactionsPage() {
                 <tr>
                   <td
                     colSpan={
-                      5 + (privileged ? 1 : 0) + (isAdmin ? 1 : 0)
+                      6 + (privileged ? 1 : 0) + (isAdmin ? 1 : 0)
                     }
                     className="p-8 text-center text-gray-400"
                   >
@@ -220,13 +234,48 @@ export default function TransactionsPage() {
                   </td>
                 </tr>
               ) : (
-                transactions.map((t) => (
+                transactions.map((t) => {
+                  // Diff in rand and percent between what the statement
+                  // says vs the matched invoice's totalZAR. We tolerate
+                  // small (< R5 OR < 1%) gaps silently — those are
+                  // rounding and the FX-markup setting's tuning headroom.
+                  const invoiceZAR =
+                    t.invoice?.totalZAR ?? t.invoice?.total ?? null;
+                  const diff =
+                    invoiceZAR != null ? t.amount - invoiceZAR : null;
+                  const diffPct =
+                    diff != null && t.amount !== 0
+                      ? Math.abs(diff) / Math.abs(t.amount)
+                      : null;
+                  const flagDiff =
+                    diff != null &&
+                    Math.abs(diff) > 5 &&
+                    (diffPct ?? 0) > 0.01;
+                  return (
                   <tr key={t.id} className="border-b">
                     <td className="p-4">{t.merchant}</td>
-                    <td className="p-4">
+                    <td className="p-4 whitespace-nowrap">
                       R {t.amount.toFixed(2)}
                       {t.amount < 0 && (
                         <span className="ml-2 text-xs text-green-700">refund</span>
+                      )}
+                    </td>
+                    <td className="p-4 whitespace-nowrap">
+                      {invoiceZAR == null ? (
+                        <span className="text-gray-400">—</span>
+                      ) : (
+                        <>
+                          R {invoiceZAR.toFixed(2)}
+                          {flagDiff && diff != null && (
+                            <span
+                              className="ml-2 text-xs text-orange-600 font-medium"
+                              title="Statement and invoice amounts differ"
+                            >
+                              {diff > 0 ? '+' : ''}
+                              R {Math.abs(diff).toFixed(2)} diff
+                            </span>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="p-4 text-gray-700">
@@ -282,7 +331,8 @@ export default function TransactionsPage() {
                       </td>
                     )}
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
