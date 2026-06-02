@@ -17,8 +17,9 @@ import * as path from 'path';
 // (which NestJS sets by default), default import is the right form here.
 import csv from 'csv-parser';
 
-// Cap upload size — PDFs can be larger than CSVs.
-export const MAX_STATEMENT_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+// Cap upload size — multi-page PDF statements can run 20–40 MB.
+// Must stay ≤ Nginx's client_max_body_size in deploy/nginx-recon.conf.
+export const MAX_STATEMENT_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 export const ALLOWED_STATEMENT_MIME_TYPES = [
   'text/csv',
   'application/vnd.ms-excel',

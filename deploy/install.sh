@@ -351,8 +351,10 @@ server {
   listen $SERVER_PORT default_server;
   server_name _;
 
-  # Allow large invoice uploads (PDFs can run 5+ MB).
-  client_max_body_size 20M;
+  # Allow large invoice uploads. Phone photos and multi-page PDFs
+  # can run 30+ MB; keep this in sync with MAX_INVOICE_FILE_SIZE and
+  # MAX_STATEMENT_FILE_SIZE in the backend services.
+  client_max_body_size 50M;
 
   # Backend API. Strip /api prefix.
   location /api/ {

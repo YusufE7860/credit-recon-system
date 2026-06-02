@@ -49,7 +49,11 @@ function parseStoreAllocations(raw: string | undefined): string[] {
 
 // Maximum file size we'll accept for an invoice upload.
 // Multer's limits also enforce this at the wire level — see the controller.
-export const MAX_INVOICE_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+// 30 MB chosen because modern phone photos (especially iOS HDR JPEGs
+// at full resolution) can run 8–15 MB. PDFs of multi-page scanned
+// invoices can also be large. Must stay ≤ Nginx's client_max_body_size
+// in deploy/nginx-recon.conf.
+export const MAX_INVOICE_FILE_SIZE = 30 * 1024 * 1024; // 30 MB
 
 // MIME types we accept. Anything outside this list is rejected.
 export const ALLOWED_INVOICE_MIME_TYPES = [
