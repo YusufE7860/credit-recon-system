@@ -107,7 +107,7 @@ export default function InvoicesPage() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-4 pt-16 md:p-8">
+      <section className="flex-1 min-w-0 p-4 pt-16 md:p-8">
         <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-3xl font-bold">Invoices</h1>

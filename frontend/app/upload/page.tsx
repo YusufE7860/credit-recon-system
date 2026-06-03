@@ -377,7 +377,7 @@ export default function UploadPage() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-4 pt-16 md:p-8 max-w-3xl">
+      <section className="flex-1 min-w-0 p-4 pt-16 md:p-8 max-w-3xl">
         <h1 className="text-3xl font-bold mb-2">Upload</h1>
         <p className="text-gray-600 mb-6">
           Capture invoice photos with your phone camera, pick multiple

@@ -153,7 +153,7 @@ export default function TransactionsPage() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-4 pt-16 md:p-8">
+      <section className="flex-1 min-w-0 p-4 pt-16 md:p-8">
         <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-3xl font-bold">Transactions</h1>
@@ -203,10 +203,10 @@ export default function TransactionsPage() {
           </p>
         )}
 
-        {/* overflow-x-auto lets the table scroll horizontally on phones
-            rather than getting clipped — the table doesn't fit in 360px
-            even with the narrowest columns. */}
-        <div className="bg-white rounded-xl shadow overflow-x-auto">
+        {/* Desktop / tablet: full table. Hidden on phones, where the
+            same data is rendered as a vertical card list below — much
+            more readable than a horizontally-scrolling 7-column table. */}
+        <div className="bg-white rounded-xl shadow overflow-x-auto hidden md:block">
           <table className="w-full min-w-[700px]">
             <thead className="bg-black text-white">
               <tr>
@@ -336,6 +336,119 @@ export default function TransactionsPage() {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile-only card list. Same data as the desktop table but
+            stacked vertically so it actually fits on a phone — no
+            horizontal scrolling required. Hidden at md+ where the
+            real table takes over. */}
+        <div className="md:hidden space-y-3">
+          {transactions.length === 0 && !loading ? (
+            <div className="bg-white rounded-xl shadow p-8 text-center text-gray-400 text-sm">
+              No transactions to show.
+            </div>
+          ) : (
+            transactions.map((t) => {
+              const invoiceZAR =
+                t.invoice?.totalZAR ?? t.invoice?.total ?? null;
+              const diff =
+                invoiceZAR != null ? t.amount - invoiceZAR : null;
+              const diffPct =
+                diff != null && t.amount !== 0
+                  ? Math.abs(diff) / Math.abs(t.amount)
+                  : null;
+              const flagDiff =
+                diff != null &&
+                Math.abs(diff) > 5 &&
+                (diffPct ?? 0) > 0.01;
+              return (
+                <div
+                  key={t.id}
+                  className="bg-white rounded-xl shadow p-4"
+                >
+                  {/* Top row: merchant + amount, biggest visual weight */}
+                  <div className="flex justify-between items-start gap-3">
+                    <p className="font-medium text-sm flex-1 min-w-0 break-words">
+                      {t.merchant}
+                    </p>
+                    <p className="font-semibold text-right whitespace-nowrap">
+                      R {t.amount.toFixed(2)}
+                      {t.amount < 0 && (
+                        <span className="block text-[10px] text-green-700 font-normal">
+                          refund
+                        </span>
+                      )}
+                    </p>
+                  </div>
+
+                  {/* Date + status badges */}
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-gray-500">
+                      {new Date(t.transactionDate).toLocaleDateString()}
+                    </span>
+                    {t.category && (
+                      <span className="text-gray-500">· {t.category}</span>
+                    )}
+                    <span
+                      className={
+                        t.flagged
+                          ? 'text-orange-700 font-medium'
+                          : 'text-gray-500'
+                      }
+                    >
+                      · {t.status}
+                      {t.flagged ? ' · flagged' : ''}
+                    </span>
+                  </div>
+
+                  {/* Cardholder (privileged only) */}
+                  {privileged && t.cardholder.name && (
+                    <p className="mt-2 text-xs text-gray-600">
+                      {t.cardholder.name}
+                      {!t.cardholder.assigned && (
+                        <span className="ml-2 text-orange-600">
+                          unassigned
+                        </span>
+                      )}
+                      {t.cardholder.last4 && (
+                        <span className="text-gray-400">
+                          {' '}· …{t.cardholder.last4}
+                        </span>
+                      )}
+                    </p>
+                  )}
+
+                  {/* Matched invoice + diff chip (only when matched) */}
+                  {invoiceZAR != null && (
+                    <div className="mt-2 pt-2 border-t border-gray-100 text-xs">
+                      <span className="text-gray-500">Invoice:</span>{' '}
+                      <span className="text-gray-700">
+                        R {invoiceZAR.toFixed(2)}
+                      </span>
+                      {flagDiff && diff != null && (
+                        <span className="ml-2 text-orange-600 font-medium">
+                          {diff > 0 ? '+' : ''}R{' '}
+                          {Math.abs(diff).toFixed(2)} diff
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Admin edit affordance */}
+                  {isAdmin && (
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        onClick={() => openEdit(t)}
+                        className="text-xs text-gray-600 hover:text-black"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
 
         {/* Admin edit-transaction modal */}

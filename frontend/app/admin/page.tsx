@@ -39,7 +39,7 @@ export default function AdminLandingPage() {
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
 
-      <section className="flex-1 p-4 pt-16 md:p-8">
+      <section className="flex-1 min-w-0 p-4 pt-16 md:p-8">
         <h1 className="text-3xl font-bold">Admin</h1>
         <p className="text-gray-600 mt-1 mb-6">
           Manage users, cards, and edit-request workflows
