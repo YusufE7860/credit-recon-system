@@ -5,7 +5,11 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { PdfParserService, ParsedCardSection } from './pdf-parser.service';
+import {
+  PdfParserService,
+  ParsedCardSection,
+  looksLikeBankFee,
+} from './pdf-parser.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
 import {
   normaliseLast4,
@@ -329,17 +333,28 @@ export class StatementsService {
       // It doesn't return the inserted rows, which is fine here.
       if (normalized.length > 0) {
         await tx.transaction.createMany({
-          data: normalized.map((n) => ({
-            amount: n.amount,
-            merchant: n.merchant,
-            category: n.category,
-            description: null,
-            transactionDate: n.transactionDate,
-            cardLast4: n.cardLast4 ?? meta.cardLast4 ?? null,
-            statementId: stmt.id,
-            status: 'POSTED',
-            userId,
-          })),
+          data: normalized.map((n) => {
+            // Detect bank-side fees by merchant string. Same heuristic
+            // used by the PDF parser so behaviour is consistent across
+            // both upload paths.
+            const isFee = looksLikeBankFee(n.merchant);
+            return {
+              amount: n.amount,
+              merchant: n.merchant,
+              // CSV may already have a category from the source — keep
+              // it if present, otherwise auto-categorise fees.
+              category:
+                n.category ?? (isFee ? 'Bank Charges - FNB' : null),
+              noMatchRequired: isFee,
+              matched: isFee,
+              description: null,
+              transactionDate: n.transactionDate,
+              cardLast4: n.cardLast4 ?? meta.cardLast4 ?? null,
+              statementId: stmt.id,
+              status: 'POSTED',
+              userId,
+            };
+          }),
         });
       }
 
@@ -516,7 +531,21 @@ export class StatementsService {
           amount: t.amount,
           merchant: t.merchant,
           description: t.location,
-          category: t.isFee ? 'Bank Fee' : null,
+          // Bank-side fees (Int Pymt Fee, FX conversion, service
+          // charges, VAT on fees, etc.) get auto-categorised to the
+          // FFG chart-of-accounts "Bank Charges - FNB" bucket so they
+          // flow into reports without a human touching them. Everything
+          // else stays uncategorised — gets a category from the matched
+          // invoice during reconciliation.
+          category: t.isFee ? 'Bank Charges - FNB' : null,
+          // Fees never need a matching invoice. This flag tells the
+          // recon engine to skip them and the Reports > Unmatched tab
+          // to filter them out.
+          noMatchRequired: t.isFee,
+          // Marking fees as already "matched" semantically signals
+          // "no further action needed". The matchedAt timestamp stays
+          // null so it's obvious nobody actually matched a real receipt.
+          matched: t.isFee,
           transactionDate: t.date,
           // Use the normalised last4 so transactions match the same
           // value stored on the Card row — important for the dedup
@@ -524,8 +553,10 @@ export class StatementsService {
           cardLast4: normalisedLast4 ?? section.last4,
           statementId,
           status: 'POSTED',
-          // Flag transactions on unassigned cards so admin can route them.
-          flagged: needsAssignment,
+          // Flag transactions on unassigned cards so admin can route
+          // them — except auto-handled fees, which don't need routing
+          // because no one's chasing a receipt for them.
+          flagged: needsAssignment && !t.isFee,
           userId: ownerUserId,
         })),
       });

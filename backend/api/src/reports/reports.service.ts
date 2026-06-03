@@ -126,6 +126,10 @@ export class ReportsService {
           ...txnWhere,
           matched: false,
           amount: { gt: 0 }, // exclude refunds from the audit list
+          // Bank-side fees don't need a matching invoice — they're
+          // auto-handled at import time. Don't surface them here as
+          // "unmatched needing attention".
+          noMatchRequired: false,
         },
         orderBy: { transactionDate: 'desc' },
         select: {

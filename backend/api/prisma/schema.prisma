@@ -122,6 +122,14 @@ model Transaction {
   flagged         Boolean  @default(false)
   duplicate       Boolean  @default(false)
 
+  // Set to true at import time for transactions that don't need an
+  // invoice (bank fees, FX conversion charges, VAT on fees, interest,
+  // monthly card fees). The reconciliation engine skips these so they
+  // never show as "unmatched", and the Reports > Unmatched tab filters
+  // them out. They still appear in the transactions list — they're real
+  // charges, just not ones an employee can produce a receipt for.
+  noMatchRequired Boolean  @default(false)
+
   cardLast4       String?
 
   // Inverse side of the Invoice -> Transaction relation. One transaction

@@ -22,6 +22,10 @@ type Transaction = {
   status: string;
   matched: boolean;
   flagged: boolean;
+  // Bank-side fees and FX charges get this at import time. Reconciliation
+  // skips them; UI surfaces an "auto" badge so users understand they
+  // don't need to chase a receipt.
+  noMatchRequired: boolean;
   cardLast4: string | null;
   // Resolved owner of the card this charge appeared on — comes from
   // Card.assignedUser if assigned, else Card.cardholderName (the
@@ -292,6 +296,14 @@ export default function TransactionsPage() {
                         {t.status}
                         {t.flagged ? ' · flagged' : ''}
                       </span>
+                      {t.noMatchRequired && (
+                        <span
+                          className="ml-2 text-[10px] uppercase tracking-wider bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded"
+                          title="Bank-side fee — no invoice needed"
+                        >
+                          auto
+                        </span>
+                      )}
                     </td>
                     {privileged && (
                       <td className="p-4 text-gray-700">
@@ -399,6 +411,14 @@ export default function TransactionsPage() {
                       · {t.status}
                       {t.flagged ? ' · flagged' : ''}
                     </span>
+                    {t.noMatchRequired && (
+                      <span
+                        className="text-[10px] uppercase tracking-wider bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded"
+                        title="Bank-side fee — no invoice needed"
+                      >
+                        auto
+                      </span>
+                    )}
                   </div>
 
                   {/* Cardholder (privileged only) */}

@@ -56,6 +56,38 @@ const SKIP_DESCRIPTIONS = [
 // These prefixes mark bank fees (which ARE real transactions, just flagged).
 const FEE_PREFIXES = ['#'];
 
+// Keyword patterns inside the merchant body that identify a row as a
+// bank-side fee/charge that the customer can't produce a receipt for.
+// Matched case-insensitively, anywhere in the merchant string.
+// Anything that hits one of these gets `noMatchRequired=true` and is
+// auto-categorised as "Bank Charges - FNB" downstream — the matching
+// engine skips them entirely.
+const FEE_KEYWORDS = [
+  'int pymt fee',     // international payment fee (Visa/Mastercard markup)
+  'currency conv',    // currency conversion fee
+  'forex fee',
+  'service fee',
+  'monthly fee',
+  'card fee',
+  'card service',
+  'card maint',
+  'admin fee',
+  'interest',
+  'finance charge',
+  'late fee',
+  'vat on fee',
+  'fnb charge',
+];
+
+// Returns true if a transaction line should be treated as a bank-side
+// charge that doesn't need an invoice to match.
+export function looksLikeBankFee(merchant: string): boolean {
+  const trimmed = merchant.trimStart();
+  if (FEE_PREFIXES.some((p) => trimmed.startsWith(p))) return true;
+  const lower = merchant.toLowerCase();
+  return FEE_KEYWORDS.some((k) => lower.includes(k));
+}
+
 // Months for date parsing.
 const MONTHS: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
@@ -265,7 +297,10 @@ export class PdfParserService {
     // "Cr" suffix = credit / refund — store as negative.
     if (crFlag) amount = -Math.abs(amount);
 
-    const isFee = FEE_PREFIXES.some((p) => merchant.trimStart().startsWith(p));
+    // isFee covers BOTH the `#`-prefix shape AND keyword-matched fees
+    // (Int Pymt Fee, currency conv, etc). Statement import treats them
+    // all the same: auto-categorise + skip from matching.
+    const isFee = looksLikeBankFee(merchant);
 
     return { date, merchant, location, amount, isFee };
   }

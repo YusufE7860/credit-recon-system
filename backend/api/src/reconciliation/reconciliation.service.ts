@@ -137,6 +137,10 @@ export class ReconciliationService {
     const transactions = await this.prisma.transaction.findMany({
       where: {
         matched: false,
+        // Skip transactions that are bank-side fees / FX charges. Those
+        // have no invoice to match against and are pre-marked at import
+        // time so they never enter the matching pool.
+        noMatchRequired: false,
         userId: scopedToSelf ? currentUser.sub : undefined,
         transactionDate: { gte: effectivePeriod.from, lte: endOfPeriod },
       },
@@ -302,6 +306,7 @@ export class ReconciliationService {
     const candidates = await this.prisma.transaction.findMany({
       where: {
         matched: false,
+        noMatchRequired: false, // skip bank-fee rows
         userId: invoice.userId,
         transactionDate: { gte: lo, lte: hi },
       },
@@ -466,6 +471,8 @@ export class ReconciliationService {
         matched: false,
         // Skip refunds — invoices shouldn't match negative-amount rows.
         amount: { gt: 0 },
+        // Skip bank-side fees — they're handled automatically.
+        noMatchRequired: false,
       },
       orderBy: { transactionDate: 'desc' },
       // Capped — a giant unmatched pool would slow the picker. Tune up
