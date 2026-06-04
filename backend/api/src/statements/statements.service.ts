@@ -10,6 +10,7 @@ import {
   ParsedCardSection,
   looksLikeBankFee,
 } from './pdf-parser.service';
+import { ReconciliationService } from '../reconciliation/reconciliation.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
 import {
   normaliseLast4,
@@ -100,6 +101,11 @@ export class StatementsService {
   constructor(
     private prisma: PrismaService,
     private pdfParser: PdfParserService,
+    // Used to auto-run reconciliation after a statement is imported
+    // (or re-imported following a delete). Without this hook, invoices
+    // uploaded mid-month sat in PENDING forever once a statement landed,
+    // because nothing was calling the matcher.
+    private reconciliation: ReconciliationService,
   ) {}
 
   async list(currentUser: JwtUser) {
@@ -361,6 +367,11 @@ export class StatementsService {
       return stmt;
     });
 
+    // Auto-run reconciliation now that the new transactions are in the
+    // DB. Covers the common workflow where users uploaded invoices
+    // earlier in the month and were waiting for the statement to land.
+    await this.runAutoReconForStatement(statement);
+
     return statement;
   }
 
@@ -462,11 +473,77 @@ export class StatementsService {
       `PDF statement import: ${parsed.cards.length} cards, ${totalImported} txns imported, ${totalSkipped} skipped`,
     );
 
+    // Auto-run reconciliation across the statement's period. Critical
+    // for the multi-card case: each card belongs to a different user,
+    // and they've been uploading receipts all month waiting for the
+    // statement.
+    await this.runAutoReconForStatement(statement);
+
     return {
       ...statement,
       cards: cardSummaries, // returned to UI so admin can see what happened
       warnings: parsed.warnings,
     };
+  }
+
+  // Auto-reconciliation hook: called after every statement upload.
+  // Derives the period from the statement (periodStart/periodEnd if
+  // present, otherwise widens to a generous month-around fallback so
+  // the matcher still has something to chew on) and triggers an org-
+  // wide recon run. Failures here are logged but never bubble up — the
+  // statement import itself has already succeeded by this point.
+  private async runAutoReconForStatement(statement: {
+    id: string;
+    periodStart: Date | null;
+    periodEnd: Date | null;
+  }): Promise<void> {
+    let from: Date;
+    let to: Date;
+
+    if (statement.periodStart && statement.periodEnd) {
+      from = statement.periodStart;
+      to = statement.periodEnd;
+    } else {
+      // Fall back to the min/max transaction date actually stored
+      // against the statement. Worst-case (statement has no rows), we
+      // just skip — there's nothing to match anyway.
+      const range = await this.prisma.transaction.aggregate({
+        where: { statementId: statement.id },
+        _min: { transactionDate: true },
+        _max: { transactionDate: true },
+      });
+      if (!range._min.transactionDate || !range._max.transactionDate) {
+        this.logger.log(
+          `Auto-recon skipped — statement ${statement.id} has no transactions to anchor a period.`,
+        );
+        return;
+      }
+      from = range._min.transactionDate;
+      to = range._max.transactionDate;
+    }
+
+    // Widen by ±7 days so invoices uploaded a few days before/after
+    // the statement's stated period still get a shot. Banks often
+    // cut off mid-month and users date invoices to "today" not "the
+    // bank's reporting boundary".
+    const widenedFrom = new Date(from);
+    widenedFrom.setDate(widenedFrom.getDate() - 7);
+    const widenedTo = new Date(to);
+    widenedTo.setDate(widenedTo.getDate() + 7);
+
+    try {
+      const result = await this.reconciliation.reconcileForPeriod({
+        from: widenedFrom,
+        to: widenedTo,
+      });
+      this.logger.log(
+        `Auto-recon after statement ${statement.id}: ${result.newlyMatched} matched, ${result.stillUnmatched} still unmatched`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Auto-recon failed for statement ${statement.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // Import one card section. Returns counts and metadata for the summary.
