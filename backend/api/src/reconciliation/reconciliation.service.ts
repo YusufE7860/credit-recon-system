@@ -331,13 +331,12 @@ export class ReconciliationService {
     };
     const candidates: Candidate[] = [];
     for (const inv of invoices) {
-      // Critical: enforce same-owner pairing here. We don't want one
-      // user's invoice claiming another user's transaction by accident.
-      // The candidate POOL is org-wide (so admin-uploaded statements
-      // reach every user's invoices), but actual matches stay within
-      // a single user's ownership.
+      // No same-owner constraint here, matching the org-wide behavior
+      // of runReconciliation. In practice an admin uploads invoices
+      // under their own userId for various cardholders, so requiring
+      // userId equality would block legitimate matches. The score
+      // (amount + date + merchant) already prevents nonsense pairings.
       for (const txn of transactions) {
-        if (txn.userId !== inv.userId) continue;
         const score = this.scoreMatch(inv, txn);
         if (score >= minScore) {
           candidates.push({ invoice: inv, transaction: txn, score });
