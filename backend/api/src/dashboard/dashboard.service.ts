@@ -152,11 +152,18 @@ export class DashboardService {
         select: { total: true, totalZAR: true },
       }),
 
-      this.prisma.transaction.groupBy({
-        by: ['category'],
-        _sum: { amount: true },
-        _count: { _all: true },
+      // For the category pie we want the INVOICE's category, not the
+      // transaction's (which is null until matched, or "Bank Charges -
+      // FNB" for fee rows). Fetch transactions with their matched
+      // invoice's category and aggregate in JS — Prisma can't group
+      // by a related field directly.
+      this.prisma.transaction.findMany({
         where: { ...txFilter, amount: { gt: 0 } },
+        select: {
+          amount: true,
+          category: true,
+          invoice: { select: { category: true } },
+        },
       }),
 
       this.prisma.transaction.findMany({
@@ -276,13 +283,30 @@ export class DashboardService {
       outstandingReceipts,
       statementCoverage,
       recon,
-      spendByCategory: byCategory
-        .map((row) => ({
-          category: row.category ?? 'Uncategorized',
-          total: row._sum.amount ?? 0,
-          count: row._count._all,
-        }))
-        .sort((a, b) => b.total - a.total),
+      // Aggregate the transactions-with-invoice-categories in JS.
+      // Priority: invoice.category > transaction.category > 'Uncategorized'.
+      spendByCategory: (() => {
+        const bucket = new Map<string, { total: number; count: number }>();
+        for (const t of byCategory as Array<{
+          amount: number;
+          category: string | null;
+          invoice: { category: string | null } | null;
+        }>) {
+          const cat =
+            t.invoice?.category ?? t.category ?? 'Uncategorized';
+          const existing = bucket.get(cat) ?? { total: 0, count: 0 };
+          existing.total += t.amount;
+          existing.count += 1;
+          bucket.set(cat, existing);
+        }
+        return Array.from(bucket.entries())
+          .map(([category, v]) => ({
+            category,
+            total: v.total,
+            count: v.count,
+          }))
+          .sort((a, b) => b.total - a.total);
+      })(),
       spendByMonth: byMonthRaw.map((row) => ({
         month: row.month.toISOString().slice(0, 7),
         total: row.total,

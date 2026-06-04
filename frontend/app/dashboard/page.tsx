@@ -253,24 +253,28 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Statement vs invoices — the actionable trio. Statement
-            column will be empty until end-of-month uploads land; that's
-            shown explicitly so the user knows nothing is broken. */}
+        {/* Statement vs invoices — the actionable trio. We show the
+            statement spend whenever there are any transactions in the
+            period (since those came FROM a statement) — coverage flag
+            is just a small caveat below the number now, not a reason
+            to hide useful data. */}
         <div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <SummaryCard
               label="Statement spend"
               value={
-                summary.statementCoverage === 'none'
+                summary.totalTransactions === 0
                   ? '—'
                   : fmtZAR(summary.statementSpend)
               }
               sub={
-                summary.statementCoverage === 'none'
-                  ? 'No statement uploaded for this period yet'
+                summary.totalTransactions === 0
+                  ? 'No transactions in this period'
                   : summary.statementCoverage === 'partial'
-                  ? 'Partial statement coverage'
-                  : 'What the bank says was spent'
+                  ? `${summary.totalTransactions} transactions · partial coverage`
+                  : summary.statementCoverage === 'none'
+                  ? `${summary.totalTransactions} transactions`
+                  : `${summary.totalTransactions} transactions · what the bank says`
               }
             />
             <SummaryCard
@@ -281,13 +285,13 @@ export default function Dashboard() {
             <SummaryCard
               label="Outstanding receipts"
               value={
-                summary.statementCoverage === 'none'
+                summary.totalTransactions === 0
                   ? '—'
                   : fmtZAR(Math.max(summary.outstandingReceipts, 0))
               }
               sub={
-                summary.statementCoverage === 'none'
-                  ? 'Needs a statement to compute'
+                summary.totalTransactions === 0
+                  ? 'No transactions yet'
                   : summary.outstandingReceipts > 0
                   ? 'Upload these receipts to close the gap'
                   : summary.outstandingReceipts < 0
@@ -295,7 +299,7 @@ export default function Dashboard() {
                   : 'All caught up — every transaction has a receipt'
               }
               highlight={
-                summary.statementCoverage !== 'none' &&
+                summary.totalTransactions > 0 &&
                 summary.outstandingReceipts > 0
                   ? 'orange'
                   : undefined

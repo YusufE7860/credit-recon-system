@@ -257,6 +257,152 @@ export class ReconciliationService {
     return result;
   }
 
+  // Run a full org-wide reconciliation for a given period, with NO
+  // user scoping. Triggered automatically after a statement upload or
+  // re-upload, where we want EVERY pending/unmatched invoice in the
+  // period to get a shot at the new transaction pool — regardless of
+  // which user uploaded the invoice vs which user owns the card.
+  //
+  // Differs from runReconciliation():
+  //   - No JwtUser required (statement upload is the "actor").
+  //   - Never scoped to a single user; statements typically span many.
+  //   - Skips snapshot generation — the user-triggered recon button is
+  //     still the canonical "create a saved report" entry point.
+  //
+  // Returns the same shape as runReconciliation() so the caller can
+  // log meaningful counts.
+  async reconcileForPeriod(period: {
+    from: Date;
+    to: Date;
+  }): Promise<ReconcileResult> {
+    this.logger.log(
+      `Auto-reconciliation triggered (org-wide) — period ${period.from.toISOString().slice(0, 10)} → ${period.to.toISOString().slice(0, 10)}`,
+    );
+
+    const endOfPeriod = new Date(period.to);
+    endOfPeriod.setHours(23, 59, 59, 999);
+    const startOfPeriod = new Date(period.from);
+    startOfPeriod.setHours(0, 0, 0, 0);
+
+    // Pull every still-open invoice in the period. Note we DON'T filter
+    // by userId — a statement upload is org-side, so we let invoices
+    // from any user compete for the transactions in the new statement.
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        transactionId: null,
+        status: { in: [ReconStatus.PENDING, ReconStatus.UNMATCHED] },
+        invoiceDate: { gte: startOfPeriod, lte: endOfPeriod },
+      },
+    });
+
+    // Same for transactions — every unmatched, non-fee, in-period row.
+    const transactions = await this.prisma.transaction.findMany({
+      where: {
+        matched: false,
+        noMatchRequired: false,
+        transactionDate: { gte: startOfPeriod, lte: endOfPeriod },
+      },
+    });
+
+    this.logger.log(
+      `Auto-recon: ${invoices.length} open invoices vs ${transactions.length} unmatched transactions`,
+    );
+
+    if (invoices.length === 0 || transactions.length === 0) {
+      // Nothing to do — return an empty result, no DB writes.
+      return {
+        invoicesConsidered: invoices.length,
+        transactionsConsidered: transactions.length,
+        newlyMatched: 0,
+        stillUnmatched: invoices.length,
+        matches: [],
+      };
+    }
+
+    const minScore = this.settings.getNumber(
+      SETTING_KEYS.RECON_MIN_SCORE,
+      DEFAULT_MIN_SCORE,
+    );
+
+    type Candidate = {
+      invoice: Invoice;
+      transaction: Transaction;
+      score: number;
+    };
+    const candidates: Candidate[] = [];
+    for (const inv of invoices) {
+      // Critical: enforce same-owner pairing here. We don't want one
+      // user's invoice claiming another user's transaction by accident.
+      // The candidate POOL is org-wide (so admin-uploaded statements
+      // reach every user's invoices), but actual matches stay within
+      // a single user's ownership.
+      for (const txn of transactions) {
+        if (txn.userId !== inv.userId) continue;
+        const score = this.scoreMatch(inv, txn);
+        if (score >= minScore) {
+          candidates.push({ invoice: inv, transaction: txn, score });
+        }
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+
+    const claimedInvoices = new Set<string>();
+    const claimedTransactions = new Set<string>();
+    const matchesToApply: Candidate[] = [];
+    for (const c of candidates) {
+      if (claimedInvoices.has(c.invoice.id)) continue;
+      if (claimedTransactions.has(c.transaction.id)) continue;
+      matchesToApply.push(c);
+      claimedInvoices.add(c.invoice.id);
+      claimedTransactions.add(c.transaction.id);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const m of matchesToApply) {
+        await tx.invoice.update({
+          where: { id: m.invoice.id },
+          data: {
+            transactionId: m.transaction.id,
+            status: ReconStatus.MATCHED,
+            matchedAt: new Date(),
+          },
+        });
+        await tx.transaction.update({
+          where: { id: m.transaction.id },
+          data: { matched: true },
+        });
+      }
+      // PENDING invoices that didn't find a match now graduate to
+      // UNMATCHED (they had their chance with the new transaction pool).
+      const stillOpenIds = invoices
+        .filter((i) => !claimedInvoices.has(i.id))
+        .map((i) => i.id);
+      if (stillOpenIds.length > 0) {
+        await tx.invoice.updateMany({
+          where: { id: { in: stillOpenIds } },
+          data: { status: ReconStatus.UNMATCHED },
+        });
+      }
+    });
+
+    this.logger.log(
+      `Auto-recon complete: ${matchesToApply.length} matched, ${invoices.length - matchesToApply.length} still unmatched`,
+    );
+
+    return {
+      invoicesConsidered: invoices.length,
+      transactionsConsidered: transactions.length,
+      newlyMatched: matchesToApply.length,
+      stillUnmatched: invoices.length - matchesToApply.length,
+      matches: matchesToApply.map((m) => ({
+        invoiceId: m.invoice.id,
+        transactionId: m.transaction.id,
+        score: m.score,
+      })),
+    };
+  }
+
   // First day of the current month → today. Used when the caller
   // doesn't pass an explicit period to runReconciliation.
   private defaultPeriod(): { from: Date; to: Date } {
