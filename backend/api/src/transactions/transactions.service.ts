@@ -125,6 +125,11 @@ export class TransactionsService {
             total: true,
             totalZAR: true,
             currency: true,
+            // Needed for the signed-contribution math: REFUND invoices
+            // subtract (credit) and creditApplied is wallet credit
+            // deducted from the printed total before matching.
+            kind: true,
+            creditApplied: true,
           },
         },
       },

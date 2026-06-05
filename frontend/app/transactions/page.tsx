@@ -33,14 +33,18 @@ type Transaction = {
   cardholder: Cardholder;
   // Linked invoices (when matched). Plural — one transaction may have
   // multiple stacked invoices when a single statement line covers
-  // several receipts (split-payment case). The page treats the first
-  // invoice as the primary one for the side-by-side amount comparison.
+  // several receipts (split-payment case). kind + creditApplied are
+  // needed so the page can compute the SIGNED net contribution rather
+  // than naively summing totals (which would inflate the figure when a
+  // credit note / refund invoice is attached).
   invoices: Array<{
     id: string;
     supplier: string;
     total: number;
     totalZAR: number | null;
     currency: string;
+    kind?: 'PURCHASE' | 'REFUND';
+    creditApplied?: number;
   }>;
 };
 
@@ -244,16 +248,22 @@ export default function TransactionsPage() {
                   // says vs the matched invoice's totalZAR. We tolerate
                   // small (< R5 OR < 1%) gaps silently — those are
                   // rounding and the FX-markup setting's tuning headroom.
-                  // Sum across all stacked invoices (split-receipt case)
-                  // so the side-by-side comparison reflects what's
-                  // actually attached, not just the first one.
+                  // Signed net of all stacked invoices. PURCHASE adds,
+                  // REFUND subtracts, creditApplied is deducted from
+                  // gross before applying the sign. Mirrors the math
+                  // used by the manual-match picker so the diff column
+                  // shows what the system actually thinks is balanced.
                   const invoiceZAR =
                     t.invoices.length > 0
-                      ? t.invoices.reduce(
-                          (sum, inv) =>
-                            sum + (inv.totalZAR ?? inv.total ?? 0),
-                          0,
-                        )
+                      ? t.invoices.reduce((sum, inv) => {
+                          const gross = inv.totalZAR ?? inv.total ?? 0;
+                          const effective = Math.max(
+                            0,
+                            gross - (inv.creditApplied ?? 0),
+                          );
+                          const sign = inv.kind === 'REFUND' ? -1 : 1;
+                          return sum + sign * effective;
+                        }, 0)
                       : null;
                   const diff =
                     invoiceZAR != null ? t.amount - invoiceZAR : null;
@@ -373,11 +383,15 @@ export default function TransactionsPage() {
             transactions.map((t) => {
               const invoiceZAR =
                 t.invoices.length > 0
-                  ? t.invoices.reduce(
-                      (sum, inv) =>
-                        sum + (inv.totalZAR ?? inv.total ?? 0),
-                      0,
-                    )
+                  ? t.invoices.reduce((sum, inv) => {
+                      const gross = inv.totalZAR ?? inv.total ?? 0;
+                      const effective = Math.max(
+                        0,
+                        gross - (inv.creditApplied ?? 0),
+                      );
+                      const sign = inv.kind === 'REFUND' ? -1 : 1;
+                      return sum + sign * effective;
+                    }, 0)
                   : null;
               const diff =
                 invoiceZAR != null ? t.amount - invoiceZAR : null;
