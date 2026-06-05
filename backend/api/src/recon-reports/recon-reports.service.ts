@@ -365,8 +365,9 @@ export class ReconReportsService {
       cardLast4: string | null;
       matched: boolean;
       // We extended the include() in generateSnapshotsForRun so that
-      // category + storeAllocation + notes come down with the invoice.
-      invoice: {
+      // category + storeAllocation + notes come down with each invoice.
+      // Array because split invoices (multi-receipt) can stack on one txn.
+      invoices: Array<{
         id: string;
         supplier: string;
         total: number;
@@ -374,7 +375,7 @@ export class ReconReportsService {
         category: string | null;
         storeAllocation: string | null;
         notes: string | null;
-      } | null;
+      }>;
     }>,
     cardByLast4: Map<string, { last4: string | null; maskedNumber: string; cardholderName: string | null }>,
     periodStart: Date,

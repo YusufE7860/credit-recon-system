@@ -31,16 +31,17 @@ type Transaction = {
   // Card.assignedUser if assigned, else Card.cardholderName (the
   // PDF-parsed placeholder for unassigned cards).
   cardholder: Cardholder;
-  // Linked invoice (when matched). The backend includes it on the
-  // transactions list so we can show the invoice's ZAR figure side-
-  // by-side with the statement figure and flag discrepancies.
-  invoice: {
+  // Linked invoices (when matched). Plural — one transaction may have
+  // multiple stacked invoices when a single statement line covers
+  // several receipts (split-payment case). The page treats the first
+  // invoice as the primary one for the side-by-side amount comparison.
+  invoices: Array<{
     id: string;
     supplier: string;
     total: number;
     totalZAR: number | null;
     currency: string;
-  } | null;
+  }>;
 };
 
 type UserOption = {
@@ -243,8 +244,17 @@ export default function TransactionsPage() {
                   // says vs the matched invoice's totalZAR. We tolerate
                   // small (< R5 OR < 1%) gaps silently — those are
                   // rounding and the FX-markup setting's tuning headroom.
+                  // Sum across all stacked invoices (split-receipt case)
+                  // so the side-by-side comparison reflects what's
+                  // actually attached, not just the first one.
                   const invoiceZAR =
-                    t.invoice?.totalZAR ?? t.invoice?.total ?? null;
+                    t.invoices.length > 0
+                      ? t.invoices.reduce(
+                          (sum, inv) =>
+                            sum + (inv.totalZAR ?? inv.total ?? 0),
+                          0,
+                        )
+                      : null;
                   const diff =
                     invoiceZAR != null ? t.amount - invoiceZAR : null;
                   const diffPct =
@@ -362,7 +372,13 @@ export default function TransactionsPage() {
           ) : (
             transactions.map((t) => {
               const invoiceZAR =
-                t.invoice?.totalZAR ?? t.invoice?.total ?? null;
+                t.invoices.length > 0
+                  ? t.invoices.reduce(
+                      (sum, inv) =>
+                        sum + (inv.totalZAR ?? inv.total ?? 0),
+                      0,
+                    )
+                  : null;
               const diff =
                 invoiceZAR != null ? t.amount - invoiceZAR : null;
               const diffPct =

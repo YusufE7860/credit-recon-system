@@ -114,11 +114,11 @@ export class TransactionsService {
     const transactions = await this.prisma.transaction.findMany({
       where: effectiveUserId ? { userId: effectiveUserId } : undefined,
       orderBy: { transactionDate: 'desc' },
-      // Pull the matched invoice's amount so the frontend can render a
-      // side-by-side "statement amount vs invoice amount" view and flag
-      // discrepancies without a second round-trip.
+      // Pull all matched invoices (plural — split-receipt support) so the
+      // frontend can render a side-by-side "statement vs invoice" view
+      // and flag discrepancies without a second round-trip.
       include: {
-        invoice: {
+        invoices: {
           select: {
             id: true,
             supplier: true,
