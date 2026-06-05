@@ -9,7 +9,7 @@ import {
 import { SystemService } from './system.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { JwtUser } from '../auth/role.enum';
+import type { JwtUser } from '../auth/role.enum';
 
 // All endpoints require ADMIN. The in-app updater is a foot-gun by
 // design — only the most trusted role gets to point it at production.
