@@ -50,10 +50,18 @@ type UnmatchedCandidate = {
   cardLast4: string | null;
   category: string | null;
   description: string | null;
-  // Partial-match metadata (split invoice support).
+  // Partial-match metadata (split invoice + refund support).
+  // remainingAmount is SIGNED:
+  //   > 0 → still need purchases to balance the txn
+  //   < 0 → too many purchases (or need refunds/credit notes)
   claimedAmount?: number;
   remainingAmount?: number;
-  matchedInvoices?: Array<{ id: string; supplier: string; amount: number }>;
+  matchedInvoices?: Array<{
+    id: string;
+    supplier: string;
+    amount: number;
+    kind?: 'PURCHASE' | 'REFUND';
+  }>;
 };
 
 export default function InvoicesPage() {
@@ -494,8 +502,10 @@ export default function InvoicesPage() {
                                 </p>
                                 {isPartial && (
                                   <p className="text-xs text-purple-700 mt-1">
-                                    R {(t.claimedAmount ?? 0).toFixed(2)} of R{' '}
-                                    {t.amount.toFixed(2)} already attached
+                                    R {(t.claimedAmount ?? 0).toFixed(2)} net
+                                    attached ({t.matchedInvoices!.length}{' '}
+                                    invoice
+                                    {t.matchedInvoices!.length === 1 ? '' : 's'})
                                   </p>
                                 )}
                               </div>
@@ -503,11 +513,21 @@ export default function InvoicesPage() {
                                 <p className="font-semibold">
                                   R {t.amount.toFixed(2)}
                                 </p>
-                                {isPartial && (
-                                  <p className="text-xs text-purple-700 mt-1">
-                                    R {(t.remainingAmount ?? 0).toFixed(2)} left
-                                  </p>
-                                )}
+                                {isPartial && (() => {
+                                  const rem = t.remainingAmount ?? 0;
+                                  // Signed: positive = need more purchases;
+                                  // negative = over-attached on purchases.
+                                  if (Math.abs(rem) < 0.01) return null;
+                                  return (
+                                    <p
+                                      className={`text-xs mt-1 ${rem > 0 ? 'text-purple-700' : 'text-red-700'}`}
+                                    >
+                                      {rem > 0
+                                        ? `R ${rem.toFixed(2)} to balance`
+                                        : `R ${Math.abs(rem).toFixed(2)} over`}
+                                    </p>
+                                  );
+                                })()}
                                 {isBusy && (
                                   <p className="text-xs text-orange-600 mt-1">
                                     Matching...

@@ -620,20 +620,22 @@ export class ReconciliationService {
     // users can stack split invoices onto a single swipe. The picker
     // computes used/remaining client-side from the `invoices` array.
     //
-    // Sign filter: PURCHASE invoices see positive transactions (money
-    // out), REFUND invoices see negative transactions (money back to
-    // the card). Both views skip noMatchRequired bank-fee rows.
-    const amountFilter =
-      invoiceKind === 'REFUND' ? { lt: 0 } : { gt: 0 };
+    // No sign filter on the candidate pool — the user is explicitly
+    // picking what to attach, so they can mix purchases and refunds
+    // on the same transaction (e.g. R 549 credit note + 3 purchase
+    // invoices = R 59 net card spend). The auto-recon engine still
+    // enforces sign alignment, but this picker is unrestricted.
+    // Hint by `invoiceKind` is still useful for the UI to highlight
+    // likely candidates, but doesn't gate visibility.
+    void invoiceKind; // kept above for future hint logic
     const txns = await this.prisma.transaction.findMany({
       where: {
         ...userScopeFilter,
-        amount: amountFilter,
         // Skip bank-side fees — they're handled automatically.
         noMatchRequired: false,
       },
       orderBy: { transactionDate: 'desc' },
-      take: 200,
+      take: 300,
       select: {
         id: true,
         transactionDate: true,
@@ -649,25 +651,31 @@ export class ReconciliationService {
             total: true,
             totalZAR: true,
             supplier: true,
+            // Need kind + creditApplied to compute SIGNED contribution.
+            // Purchase invoices contribute +effective; refund invoices
+            // contribute -effective (they offset the transaction).
+            kind: true,
+            creditApplied: true,
           },
         },
       },
     });
 
-    // Annotate each row with how much of the transaction is already
-    // claimed by attached invoices. The picker uses this to:
-    //   - filter out fully-claimed transactions (amount used == txn amount)
-    //   - badge partially-claimed ones with "R X of R Y used"
+    // Annotate each row with the SIGNED sum of attached invoice
+    // contributions and what's left to balance. Model:
+    //   contribution = (kind === REFUND ? -1 : +1) * (totalZAR - creditApplied)
+    //   net = sum(contribution)
+    //   remaining = transaction.amount - net   (signed)
+    // Transaction is "balanced" when |remaining| is below tolerance.
     return txns
       .map((t) => {
-        // Sum the attached invoices in absolute terms — works the same
-        // for refunds (txn amount negative, invoices positive) and
-        // purchases (both positive).
-        const claimed = t.invoices.reduce(
-          (sum, inv) => sum + (inv.totalZAR ?? inv.total ?? 0),
-          0,
-        );
-        const remaining = Math.abs(t.amount) - claimed;
+        const net = t.invoices.reduce((sum, inv) => {
+          const gross = inv.totalZAR ?? inv.total ?? 0;
+          const effective = Math.max(0, gross - (inv.creditApplied ?? 0));
+          const sign = inv.kind === 'REFUND' ? -1 : 1;
+          return sum + sign * effective;
+        }, 0);
+        const remaining = t.amount - net;
         return {
           id: t.id,
           transactionDate: t.transactionDate,
@@ -680,14 +688,23 @@ export class ReconciliationService {
             id: inv.id,
             supplier: inv.supplier,
             amount: inv.totalZAR ?? inv.total ?? 0,
+            kind: inv.kind,
           })),
-          claimedAmount: claimed,
+          // claimedAmount = absolute net flow accounted for. Useful for
+          // the "R X attached" badge in the picker (signed remaining is
+          // less intuitive to display).
+          claimedAmount: Math.abs(net),
+          // remainingAmount stays SIGNED so the UI can tell whether the
+          // user needs to add more purchases (positive) vs more refunds
+          // (negative). Filter below uses absolute value.
           remainingAmount: remaining,
         };
       })
-      // Drop rows where the bank amount is already fully accounted for
-      // (within a small rand tolerance — bank rounding + FX drift).
-      .filter((t) => t.remainingAmount > 0.5);
+      // Drop rows where the bank amount is fully accounted for. We
+      // compare ABSOLUTE remaining so partially-refunded transactions
+      // (signed remaining < 0) still show up — the user might want to
+      // add more refund invoices to balance them.
+      .filter((t) => Math.abs(t.remainingAmount) > 0.5);
   }
 
   // Break an existing match — the invoice goes back to UNMATCHED.

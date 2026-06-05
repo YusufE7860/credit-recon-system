@@ -110,13 +110,20 @@ export default function InvoiceDetailPage() {
     cardLast4: string | null;
     category: string | null;
     description: string | null;
-    // Populated by the new partial-match logic. claimedAmount = sum of
-    // invoices already attached; remainingAmount = txn amount - claimed.
-    // When matchedInvoices.length > 0 the picker shows a "partially
-    // matched" badge so users see what they're stacking onto.
+    // Partial-match metadata. claimedAmount = absolute net of attached
+    // contributions (purchases - refunds). remainingAmount = txn.amount
+    // - net contribution, SIGNED:
+    //   > 0 → need more purchase contribution to balance
+    //   < 0 → over-attached on the purchase side; needs a refund/credit
+    //         note or invoice removal to balance
     claimedAmount?: number;
     remainingAmount?: number;
-    matchedInvoices?: Array<{ id: string; supplier: string; amount: number }>;
+    matchedInvoices?: Array<{
+      id: string;
+      supplier: string;
+      amount: number;
+      kind?: 'PURCHASE' | 'REFUND';
+    }>;
   };
   const [matchOpen, setMatchOpen] = useState(false);
   const [matchCandidates, setMatchCandidates] = useState<UnmatchedCandidate[]>([]);
@@ -1186,10 +1193,20 @@ export default function InvoiceDetailPage() {
                                 )}
                                 {isPartial && (
                                   <p className="text-xs text-purple-700 mt-1">
-                                    R {(t.claimedAmount ?? 0).toFixed(2)} of R{' '}
-                                    {t.amount.toFixed(2)} already attached
+                                    R {(t.claimedAmount ?? 0).toFixed(2)} net
+                                    attached ({t.matchedInvoices!.length}{' '}
+                                    invoice
+                                    {t.matchedInvoices!.length === 1 ? '' : 's'})
                                     {t.matchedInvoices!.slice(0, 2).map((mi) => (
-                                      <span key={mi.id}> · {mi.supplier}</span>
+                                      <span key={mi.id}>
+                                        {' '}
+                                        · {mi.supplier}
+                                        {mi.kind === 'REFUND' && (
+                                          <span className="text-red-700">
+                                            {' '}(refund)
+                                          </span>
+                                        )}
+                                      </span>
                                     ))}
                                   </p>
                                 )}
@@ -1198,11 +1215,19 @@ export default function InvoiceDetailPage() {
                                 <p className="font-semibold">
                                   R {t.amount.toFixed(2)}
                                 </p>
-                                {isPartial && (
-                                  <p className="text-xs text-purple-700 mt-1">
-                                    R {(t.remainingAmount ?? 0).toFixed(2)} left
-                                  </p>
-                                )}
+                                {isPartial && (() => {
+                                  const rem = t.remainingAmount ?? 0;
+                                  if (Math.abs(rem) < 0.01) return null;
+                                  return (
+                                    <p
+                                      className={`text-xs mt-1 ${rem > 0 ? 'text-purple-700' : 'text-red-700'}`}
+                                    >
+                                      {rem > 0
+                                        ? `R ${rem.toFixed(2)} to balance`
+                                        : `R ${Math.abs(rem).toFixed(2)} over`}
+                                    </p>
+                                  );
+                                })()}
                                 {isBusy && (
                                   <p className="text-xs text-orange-600 mt-1">
                                     Matching...
