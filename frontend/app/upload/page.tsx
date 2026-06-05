@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
+import { SearchableSelect } from '@/components/SearchableSelect';
 import { api, apiUpload, ApiError } from '@/lib/api';
 import { useCurrentUser, isPrivileged } from '@/lib/user-context';
 
@@ -464,16 +465,17 @@ export default function UploadPage() {
                 <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
                   Default category
                 </label>
-                <select
+                <SearchableSelect
                   value={batchCategory}
-                  onChange={(e) => setBatchCategory(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                >
-                  <option value="">— Select category —</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.name}>{c.name}</option>
-                  ))}
-                </select>
+                  onChange={setBatchCategory}
+                  options={categories.map((c) => ({
+                    value: c.name,
+                    label: c.name,
+                  }))}
+                  placeholder="— Select category —"
+                  allowClear
+                />
+
                 {categories.length === 0 && (
                   <p className="text-xs text-orange-600 mt-1">
                     No active categories yet. An admin can add them under Admin → Categories.
@@ -489,16 +491,17 @@ export default function UploadPage() {
                   <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
                     Default store / department
                   </label>
-                  <select
+                  <SearchableSelect
                     value={batchStore}
-                    onChange={(e) => setBatchStore(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  >
-                    <option value="">— Select store —</option>
-                    {stores.map((s) => (
-                      <option key={s.id} value={s.name}>{s.name}</option>
-                    ))}
-                  </select>
+                    onChange={setBatchStore}
+                    options={stores.map((s) => ({
+                      value: s.name,
+                      label: s.name,
+                    }))}
+                    placeholder="— Select store —"
+                    allowClear
+                  />
+
                   {stores.length === 0 && (
                     <p className="text-xs text-orange-600 mt-1">
                       No active stores yet. An admin can add them under Admin → Stores.
@@ -671,58 +674,54 @@ export default function UploadPage() {
                             successful upload to keep the success row clean. */}
                         {item.status !== 'success' && (
                           <div className="grid grid-cols-2 gap-2 mt-1.5">
-                            <select
+                            <SearchableSelect
                               value={item.category}
-                              onChange={(e) =>
+                              onChange={(v) =>
                                 setQueue((q) =>
                                   q.map((i) =>
                                     i.id === item.id
-                                      ? { ...i, category: e.target.value }
+                                      ? { ...i, category: v }
                                       : i,
                                   ),
                                 )
                               }
-                              disabled={item.status === 'uploading' || busy}
-                              className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
-                              title="Category"
-                            >
-                              <option value="">
-                                {batchCategory
+                              options={categories.map((c) => ({
+                                value: c.name,
+                                label: c.name,
+                              }))}
+                              placeholder={
+                                batchCategory
                                   ? `Category: ${batchCategory} (default)`
-                                  : '— Category —'}
-                              </option>
-                              {categories.map((c) => (
-                                <option key={c.id} value={c.name}>
-                                  {c.name}
-                                </option>
-                              ))}
-                            </select>
-                            <select
+                                  : '— Category —'
+                              }
+                              disabled={item.status === 'uploading' || busy}
+                              size="sm"
+                              allowClear
+                            />
+                            <SearchableSelect
                               value={item.storeAllocation}
-                              onChange={(e) =>
+                              onChange={(v) =>
                                 setQueue((q) =>
                                   q.map((i) =>
                                     i.id === item.id
-                                      ? { ...i, storeAllocation: e.target.value }
+                                      ? { ...i, storeAllocation: v }
                                       : i,
                                   ),
                                 )
                               }
-                              disabled={item.status === 'uploading' || busy}
-                              className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
-                              title="Store / Department"
-                            >
-                              <option value="">
-                                {batchStore
+                              options={stores.map((s) => ({
+                                value: s.name,
+                                label: s.name,
+                              }))}
+                              placeholder={
+                                batchStore
                                   ? `Store: ${batchStore} (default)`
-                                  : '— Store —'}
-                              </option>
-                              {stores.map((s) => (
-                                <option key={s.id} value={s.name}>
-                                  {s.name}
-                                </option>
-                              ))}
-                            </select>
+                                  : '— Store —'
+                              }
+                              disabled={item.status === 'uploading' || busy}
+                              size="sm"
+                              allowClear
+                            />
                           </div>
                         )}
 

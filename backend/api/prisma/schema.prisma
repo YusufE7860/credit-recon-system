@@ -132,11 +132,11 @@ model Transaction {
 
   cardLast4       String?
 
-  // Inverse side of the Invoice -> Transaction relation. One transaction
-  // can be matched to at most one invoice (most cards only have one
-  // receipt per purchase). If you need many-to-one later, swap to an
-  // array here.
-  invoice         Invoice?
+  // Inverse side of the Invoice -> Transaction relation. A single
+  // transaction can have multiple invoices attached when the user paid
+  // for several receipts in one swipe (e.g. two Takealot orders
+  // collapsed into a single statement line).
+  invoices        Invoice[]
 
   // Which bank-statement upload this transaction came from. Nullable
   // because we allow manual transaction entry too.
@@ -219,8 +219,18 @@ model Invoice {
   // ---- Reconciliation state ----
   status          ReconStatus @default(PENDING)
   matchedAt       DateTime?
-  transactionId   String?  @unique  // @unique enforces one-to-one
+  // Multiple invoices can now point to the same transaction (split
+  // invoices: two Takealot receipts paid as one R 1044 swipe).
+  // @unique removed so N-to-1 stacking works.
+  transactionId   String?
   transaction     Transaction? @relation(fields: [transactionId], references: [id])
+
+  // Optional line-item splits when a single invoice covers multiple
+  // categories or stores. When `splits` is empty (the common case),
+  // the invoice-level `category`/`storeAllocations` fields apply.
+  // When `splits` exist, reports use the per-line breakdown and the
+  // line amounts must sum to `total`.
+  splits          InvoiceSplit[]
 
   // ---- Edit locks ----
   // Owner can edit financial fields when this is in the future.
@@ -245,6 +255,29 @@ model Invoice {
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+// Per-line breakdown when a single invoice covers multiple
+// categories/stores. Optional — most invoices won't have any splits
+// and the invoice-level category/store fields apply directly.
+// Sum of `amount` across all splits for an invoice should equal the
+// invoice's `total` (enforced in the service layer, not the DB).
+model InvoiceSplit {
+  id        String   @id @default(uuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  category  String
+  store     String?
+  amount    Float
+
+  // Display order so users can reorder lines without renaming them.
+  sortOrder Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([invoiceId])
 }
 
 // Tracks user requests to edit sealed invoices.

@@ -50,6 +50,10 @@ type UnmatchedCandidate = {
   cardLast4: string | null;
   category: string | null;
   description: string | null;
+  // Partial-match metadata (split invoice support).
+  claimedAmount?: number;
+  remainingAmount?: number;
+  matchedInvoices?: Array<{ id: string; supplier: string; amount: number }>;
 };
 
 export default function InvoicesPage() {
@@ -443,10 +447,13 @@ export default function InvoicesPage() {
                       .map((t) => {
                         const isBusy = matchBusyId === t.id;
                         const invoiceZAR = matchInvoice.totalZAR ?? null;
+                        // For partial matches we compare against
+                        // remaining, not full transaction amount.
+                        const compareAgainst = t.remainingAmount ?? t.amount;
                         const amtClose =
                           invoiceZAR != null &&
-                          Math.abs(t.amount - invoiceZAR) /
-                            Math.max(t.amount, invoiceZAR) <
+                          Math.abs(invoiceZAR - compareAgainst) /
+                            Math.max(invoiceZAR, compareAgainst) <
                             0.05;
                         const dayMs = 24 * 60 * 60 * 1000;
                         const dateClose =
@@ -456,6 +463,7 @@ export default function InvoicesPage() {
                           ) <=
                           7 * dayMs;
                         const likely = amtClose && dateClose;
+                        const isPartial = (t.matchedInvoices?.length ?? 0) > 0;
                         return (
                           <li key={t.id}>
                             <button
@@ -464,7 +472,7 @@ export default function InvoicesPage() {
                               className={`w-full text-left p-4 flex items-start gap-3 hover:bg-gray-50 disabled:opacity-40 ${likely ? 'bg-orange-50/40' : ''}`}
                             >
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <p className="font-medium truncate">
                                     {t.merchant}
                                   </p>
@@ -473,17 +481,33 @@ export default function InvoicesPage() {
                                       likely
                                     </span>
                                   )}
+                                  {isPartial && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
+                                      partial · {t.matchedInvoices!.length} attached
+                                    </span>
+                                  )}
                                 </div>
                                 <p className="text-xs text-gray-500 mt-0.5">
                                   {new Date(t.transactionDate).toLocaleDateString()}
                                   {t.cardLast4 && <> · card …{t.cardLast4}</>}
                                   {t.category && <> · {t.category}</>}
                                 </p>
+                                {isPartial && (
+                                  <p className="text-xs text-purple-700 mt-1">
+                                    R {(t.claimedAmount ?? 0).toFixed(2)} of R{' '}
+                                    {t.amount.toFixed(2)} already attached
+                                  </p>
+                                )}
                               </div>
                               <div className="text-right flex-shrink-0">
                                 <p className="font-semibold">
                                   R {t.amount.toFixed(2)}
                                 </p>
+                                {isPartial && (
+                                  <p className="text-xs text-purple-700 mt-1">
+                                    R {(t.remainingAmount ?? 0).toFixed(2)} left
+                                  </p>
+                                )}
                                 {isBusy && (
                                   <p className="text-xs text-orange-600 mt-1">
                                     Matching...

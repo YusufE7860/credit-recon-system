@@ -188,9 +188,25 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
-        transaction: true,
+        transaction: {
+          // Include all invoices stacked on the same transaction so the
+          // detail page can show "this is part of a split with X, Y".
+          include: {
+            invoices: {
+              select: {
+                id: true,
+                supplier: true,
+                total: true,
+                totalZAR: true,
+                currency: true,
+              },
+            },
+          },
+        },
         uploader: { select: { id: true, name: true, email: true } },
         user: { select: { id: true, name: true, email: true } },
+        // Line-item splits (multi-category invoices). Sorted client-side.
+        splits: { orderBy: { sortOrder: 'asc' } },
       },
     });
 
@@ -702,6 +718,87 @@ export class InvoicesService {
           metadataUnlockedUntil: consumesMetaUnlock ? null : undefined,
         },
       });
+    });
+  }
+
+  // Replace all line-item splits on an invoice in one atomic call.
+  // The frontend sends the full final list; we delete the existing
+  // splits and re-create them — simpler than diffing.
+  //
+  // Validation:
+  //   - sum of split.amount must equal invoice.total (within R 0.01)
+  //   - splits with amount <= 0 are rejected
+  //   - category is required on every split, store is optional
+  //   - passing an empty array clears the splits (back to single-category)
+  async setSplits(
+    invoiceId: string,
+    splits: Array<{ category: string; store?: string | null; amount: number }>,
+    currentUser: JwtUser,
+  ) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+    });
+    if (!invoice) {
+      throw new NotFoundException(`Invoice ${invoiceId} not found`);
+    }
+
+    // Ownership: UPLOADERs and USERs can only edit their own invoices.
+    // Admin/Reporting can edit any (used for corrections).
+    if (!isPrivileged(currentUser.role)) {
+      const isOwner = invoice.userId === currentUser.sub;
+      const isUploader =
+        currentUser.role === Role.UPLOADER &&
+        invoice.uploaderId === currentUser.sub;
+      if (!isOwner && !isUploader) {
+        throw new ForbiddenException('You cannot edit this invoice.');
+      }
+    }
+
+    // Empty array = clear splits (revert to single-category invoice).
+    if (splits.length === 0) {
+      await this.prisma.invoiceSplit.deleteMany({
+        where: { invoiceId },
+      });
+      return { splits: [], cleared: true };
+    }
+
+    // Validate each row.
+    for (const s of splits) {
+      if (!s.category || s.category.trim().length === 0) {
+        throw new BadRequestException('Each split must have a category.');
+      }
+      if (typeof s.amount !== 'number' || isNaN(s.amount) || s.amount <= 0) {
+        throw new BadRequestException(
+          'Each split amount must be a positive number.',
+        );
+      }
+    }
+
+    // Splits must sum to invoice total (1 cent tolerance for rounding).
+    const sum = splits.reduce((acc, s) => acc + s.amount, 0);
+    if (Math.abs(sum - invoice.total) > 0.01) {
+      throw new BadRequestException(
+        `Split lines must sum to invoice total. Invoice total = ${invoice.total.toFixed(2)}, splits sum = ${sum.toFixed(2)}.`,
+      );
+    }
+
+    // Atomic replace: wipe existing splits and create the new set.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.invoiceSplit.deleteMany({ where: { invoiceId } });
+      const created = await tx.invoiceSplit.createMany({
+        data: splits.map((s, idx) => ({
+          invoiceId,
+          category: s.category.trim(),
+          store: s.store?.trim() || null,
+          amount: s.amount,
+          sortOrder: idx,
+        })),
+      });
+      const rows = await tx.invoiceSplit.findMany({
+        where: { invoiceId },
+        orderBy: { sortOrder: 'asc' },
+      });
+      return { splits: rows, count: created.count };
     });
   }
 

@@ -12,6 +12,16 @@ type Transaction = {
   amount: number;
   merchant: string;
   transactionDate: string;
+  // All invoices currently attached to this transaction — populated when
+  // multiple invoices share one statement line (split-receipt case).
+  // Includes the current invoice; the UI filters it out for display.
+  invoices?: Array<{
+    id: string;
+    supplier: string;
+    total: number;
+    totalZAR: number | null;
+    currency: string;
+  }>;
 };
 
 type Invoice = {
@@ -40,6 +50,16 @@ type Invoice = {
   editUnlockedUntil: string | null;
   metadataUnlockedUntil: string | null;
   createdAt: string;
+  // Optional line-item splits (multi-category invoices).
+  splits?: InvoiceSplit[];
+};
+
+type InvoiceSplit = {
+  id: string;
+  category: string;
+  store: string | null;
+  amount: number;
+  sortOrder: number;
 };
 
 export default function InvoiceDetailPage() {
@@ -85,12 +105,108 @@ export default function InvoiceDetailPage() {
     cardLast4: string | null;
     category: string | null;
     description: string | null;
+    // Populated by the new partial-match logic. claimedAmount = sum of
+    // invoices already attached; remainingAmount = txn amount - claimed.
+    // When matchedInvoices.length > 0 the picker shows a "partially
+    // matched" badge so users see what they're stacking onto.
+    claimedAmount?: number;
+    remainingAmount?: number;
+    matchedInvoices?: Array<{ id: string; supplier: string; amount: number }>;
   };
   const [matchOpen, setMatchOpen] = useState(false);
   const [matchCandidates, setMatchCandidates] = useState<UnmatchedCandidate[]>([]);
   const [matchLoading, setMatchLoading] = useState(false);
   const [matchSearch, setMatchSearch] = useState('');
   const [matchBusyId, setMatchBusyId] = useState<string | null>(null);
+
+  // Splits state — line-item breakdown when one invoice covers multiple
+  // categories/stores. Editable draft; only saved when the user clicks
+  // "Save splits". `splitDraft` is null when not editing (closed UI).
+  const [splitDraft, setSplitDraft] = useState<
+    Array<{ category: string; store: string; amount: number }> | null
+  >(null);
+  const [splitSaving, setSplitSaving] = useState(false);
+
+  // Begin editing splits. Pre-seeds from existing splits if any,
+  // otherwise starts with a single line at the full invoice total so
+  // the user can immediately split it.
+  function openSplitEditor() {
+    if (!invoice) return;
+    if (invoice.splits && invoice.splits.length > 0) {
+      setSplitDraft(
+        invoice.splits.map((s) => ({
+          category: s.category,
+          store: s.store ?? '',
+          amount: s.amount,
+        })),
+      );
+    } else {
+      setSplitDraft([
+        {
+          category: invoice.category ?? '',
+          store: invoice.storeAllocation ?? '',
+          amount: invoice.total,
+        },
+      ]);
+    }
+  }
+
+  // Persist the splits. Backend validates that the sum matches invoice
+  // total; we mirror the check client-side for instant feedback.
+  async function saveSplits() {
+    if (!invoice || !splitDraft) return;
+    const sum = splitDraft.reduce((acc, s) => acc + (s.amount || 0), 0);
+    if (Math.abs(sum - invoice.total) > 0.01) {
+      setError(
+        `Split lines must sum to invoice total. Total = R ${invoice.total.toFixed(2)}, splits = R ${sum.toFixed(2)}.`,
+      );
+      return;
+    }
+    setSplitSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      await api(`/invoices/${invoice.id}/splits`, {
+        method: 'PUT',
+        json: {
+          splits: splitDraft.map((s) => ({
+            category: s.category.trim(),
+            store: s.store.trim() || null,
+            amount: s.amount,
+          })),
+        },
+      });
+      const updated = await api<Invoice>(`/invoices/${invoice.id}`);
+      setInvoice(updated);
+      setSplitDraft(null);
+      setMessage('Splits saved.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save splits');
+    } finally {
+      setSplitSaving(false);
+    }
+  }
+
+  async function clearSplits() {
+    if (!invoice) return;
+    if (!confirm('Remove all splits and revert to a single category?')) return;
+    setSplitSaving(true);
+    setError('');
+    try {
+      await api(`/invoices/${invoice.id}/splits`, {
+        method: 'PUT',
+        json: { splits: [] },
+      });
+      const updated = await api<Invoice>(`/invoices/${invoice.id}`);
+      setInvoice(updated);
+      setSplitDraft(null);
+      setMessage('Splits cleared.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to clear splits');
+    } finally {
+      setSplitSaving(false);
+    }
+  }
 
   // Fetch unmatched transactions visible to this user.
   // Called every time the modal opens so the list is fresh (avoids
@@ -585,6 +701,204 @@ export default function InvoiceDetailPage() {
               )}
             </div>
 
+            {/* Line-item splits — for invoices covering multiple
+                categories or stores. Hidden for UPLOADERs (it edits the
+                financial breakdown which is locked behind admin
+                approval for them). */}
+            {!hideMoney && invoice && (
+              <div className="bg-white rounded-xl shadow p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-gray-600 uppercase tracking-wider">
+                    Line splits
+                  </h2>
+                  {(invoice.splits?.length ?? 0) > 0 && !splitDraft && (
+                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                      {invoice.splits!.length} lines
+                    </span>
+                  )}
+                </div>
+
+                {/* View mode: existing splits in read-only summary */}
+                {!splitDraft && (invoice.splits?.length ?? 0) > 0 && (
+                  <div className="space-y-2 mb-4">
+                    {invoice.splits!.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex justify-between items-center text-sm border-b border-gray-100 pb-2"
+                      >
+                        <div>
+                          <p className="font-medium">{s.category}</p>
+                          {s.store && (
+                            <p className="text-xs text-gray-500">{s.store}</p>
+                          )}
+                        </div>
+                        <p className="font-medium">R {s.amount.toFixed(2)}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* View mode: no splits yet */}
+                {!splitDraft && (invoice.splits?.length ?? 0) === 0 && (
+                  <p className="text-sm text-gray-500 mb-4">
+                    This invoice uses a single category. Add splits if it
+                    covers spend across multiple categories or stores.
+                  </p>
+                )}
+
+                {/* Action buttons in view mode */}
+                {!splitDraft && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={openSplitEditor}
+                      className="text-sm bg-black text-white px-3 py-1.5 rounded hover:opacity-90"
+                    >
+                      {(invoice.splits?.length ?? 0) > 0
+                        ? 'Edit splits'
+                        : 'Split into lines'}
+                    </button>
+                    {(invoice.splits?.length ?? 0) > 0 && (
+                      <button
+                        onClick={clearSplits}
+                        disabled={splitSaving}
+                        className="text-sm text-red-600 px-3 py-1.5 rounded hover:bg-red-50"
+                      >
+                        Clear splits
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Edit mode: draft table */}
+                {splitDraft && (
+                  <div>
+                    <table className="w-full text-sm mb-3">
+                      <thead>
+                        <tr className="text-left text-xs text-gray-500 uppercase">
+                          <th className="pb-2">Category</th>
+                          <th className="pb-2">Store</th>
+                          <th className="pb-2 text-right">Amount</th>
+                          <th className="pb-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {splitDraft.map((s, idx) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="py-2 pr-2">
+                              <input
+                                value={s.category}
+                                onChange={(e) => {
+                                  const next = [...splitDraft];
+                                  next[idx] = {
+                                    ...next[idx],
+                                    category: e.target.value,
+                                  };
+                                  setSplitDraft(next);
+                                }}
+                                placeholder="Category"
+                                className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                              />
+                            </td>
+                            <td className="py-2 pr-2">
+                              <input
+                                value={s.store}
+                                onChange={(e) => {
+                                  const next = [...splitDraft];
+                                  next[idx] = {
+                                    ...next[idx],
+                                    store: e.target.value,
+                                  };
+                                  setSplitDraft(next);
+                                }}
+                                placeholder="(optional)"
+                                className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                              />
+                            </td>
+                            <td className="py-2 pr-2">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={s.amount}
+                                onChange={(e) => {
+                                  const next = [...splitDraft];
+                                  next[idx] = {
+                                    ...next[idx],
+                                    amount: parseFloat(e.target.value) || 0,
+                                  };
+                                  setSplitDraft(next);
+                                }}
+                                className="w-24 text-right border border-gray-300 rounded px-2 py-1 text-sm"
+                              />
+                            </td>
+                            <td className="py-2 text-right">
+                              <button
+                                onClick={() =>
+                                  setSplitDraft(
+                                    splitDraft.filter((_, i) => i !== idx),
+                                  )
+                                }
+                                className="text-gray-400 hover:text-red-600 text-lg"
+                                title="Remove line"
+                              >
+                                ×
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    {/* Sum hint */}
+                    {(() => {
+                      const sum = splitDraft.reduce(
+                        (acc, s) => acc + (s.amount || 0),
+                        0,
+                      );
+                      const diff = invoice.total - sum;
+                      const ok = Math.abs(diff) < 0.01;
+                      return (
+                        <p
+                          className={`text-xs mb-3 ${ok ? 'text-green-700' : 'text-orange-700'}`}
+                        >
+                          Sum: R {sum.toFixed(2)} of R{' '}
+                          {invoice.total.toFixed(2)}{' '}
+                          {ok ? '✓' : `(${diff > 0 ? '+' : ''}${diff.toFixed(2)})`}
+                        </p>
+                      );
+                    })()}
+
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={() =>
+                          setSplitDraft([
+                            ...splitDraft,
+                            { category: '', store: '', amount: 0 },
+                          ])
+                        }
+                        className="text-sm border border-gray-300 px-3 py-1.5 rounded hover:bg-gray-50"
+                      >
+                        + Add line
+                      </button>
+                      <button
+                        onClick={saveSplits}
+                        disabled={splitSaving}
+                        className="text-sm bg-black text-white px-3 py-1.5 rounded hover:opacity-90 disabled:opacity-40"
+                      >
+                        {splitSaving ? 'Saving...' : 'Save splits'}
+                      </button>
+                      <button
+                        onClick={() => setSplitDraft(null)}
+                        disabled={splitSaving}
+                        className="text-sm text-gray-700 px-3 py-1.5 rounded hover:bg-gray-100"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Reconciliation panel — hidden entirely for UPLOADER
                 since the matched-transaction line shows the bank-side
                 amount, and the unlink/manual-link affordances are part
@@ -707,14 +1021,19 @@ export default function InvoiceDetailPage() {
                       })
                       .map((t) => {
                         const isBusy = matchBusyId === t.id;
-                        // Highlight "looks like a likely match" so the
-                        // accountant doesn't have to scan visually.
-                        // Heuristic: amount within 5% of invoice.totalZAR
-                        // AND date within 7 days of invoice.invoiceDate.
+                        // For partial-match candidates, we compare the
+                        // invoice amount against the REMAINING amount on
+                        // the transaction (txn total - already claimed)
+                        // rather than the full txn total. Otherwise a
+                        // R 500 invoice would never look "likely" against
+                        // a R 1044 transaction that already has R 500
+                        // attached.
+                        const compareAgainst =
+                          t.remainingAmount ?? t.amount;
                         const amtClose =
                           invoice.totalZAR != null &&
-                          Math.abs(t.amount - invoice.totalZAR) /
-                            Math.max(t.amount, invoice.totalZAR) <
+                          Math.abs(invoice.totalZAR - compareAgainst) /
+                            Math.max(invoice.totalZAR, compareAgainst) <
                             0.05;
                         const dayMs = 24 * 60 * 60 * 1000;
                         const dateClose =
@@ -724,6 +1043,8 @@ export default function InvoiceDetailPage() {
                           ) <=
                           7 * dayMs;
                         const likely = amtClose && dateClose;
+                        const isPartial =
+                          (t.matchedInvoices?.length ?? 0) > 0;
                         return (
                           <li key={t.id}>
                             <button
@@ -734,13 +1055,18 @@ export default function InvoiceDetailPage() {
                               }`}
                             >
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <p className="font-medium truncate">
                                     {t.merchant}
                                   </p>
                                   {likely && (
                                     <span className="text-[10px] uppercase tracking-wider bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">
                                       likely
+                                    </span>
+                                  )}
+                                  {isPartial && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
+                                      partial · {t.matchedInvoices!.length} attached
                                     </span>
                                   )}
                                 </div>
@@ -760,11 +1086,25 @@ export default function InvoiceDetailPage() {
                                     {t.description}
                                   </p>
                                 )}
+                                {isPartial && (
+                                  <p className="text-xs text-purple-700 mt-1">
+                                    R {(t.claimedAmount ?? 0).toFixed(2)} of R{' '}
+                                    {t.amount.toFixed(2)} already attached
+                                    {t.matchedInvoices!.slice(0, 2).map((mi) => (
+                                      <span key={mi.id}> · {mi.supplier}</span>
+                                    ))}
+                                  </p>
+                                )}
                               </div>
                               <div className="text-right flex-shrink-0">
                                 <p className="font-semibold">
                                   R {t.amount.toFixed(2)}
                                 </p>
+                                {isPartial && (
+                                  <p className="text-xs text-purple-700 mt-1">
+                                    R {(t.remainingAmount ?? 0).toFixed(2)} left
+                                  </p>
+                                )}
                                 {isBusy && (
                                   <p className="text-xs text-orange-600 mt-1">
                                     Matching...

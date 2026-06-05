@@ -162,7 +162,11 @@ export class DashboardService {
         select: {
           amount: true,
           category: true,
-          invoice: { select: { category: true } },
+          // invoices is now an array (a split invoice = N rows pointing
+          // at one transaction). For the pie chart we use the first
+          // attached invoice's category — fallback to the transaction's
+          // own category if none, then "Uncategorized".
+          invoices: { select: { category: true }, take: 1 },
         },
       }),
 
@@ -290,10 +294,10 @@ export class DashboardService {
         for (const t of byCategory as Array<{
           amount: number;
           category: string | null;
-          invoice: { category: string | null } | null;
+          invoices: { category: string | null }[];
         }>) {
           const cat =
-            t.invoice?.category ?? t.category ?? 'Uncategorized';
+            t.invoices[0]?.category ?? t.category ?? 'Uncategorized';
           const existing = bucket.get(cat) ?? { total: 0, count: 0 };
           existing.total += t.amount;
           existing.count += 1;

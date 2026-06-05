@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Delete,
   Param,
@@ -134,6 +135,18 @@ export class InvoicesController {
   @Post(':id/rescan')
   rescan(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.invoicesService.rescan(id, user);
+  }
+
+  // Replace all line-item splits on an invoice. Body shape:
+  // { splits: [{ category: string, store?: string, amount: number }, ...] }
+  // Empty splits array = clear splits and revert to single-category.
+  @Put(':id/splits')
+  setSplits(
+    @Param('id') id: string,
+    @Body() body: { splits: Array<{ category: string; store?: string | null; amount: number }> },
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.invoicesService.setSplits(id, body.splits ?? [], user);
   }
 
   @Delete(':id')

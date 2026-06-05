@@ -104,7 +104,16 @@ export class ReconReportsService {
 
     const transactions = await this.prisma.transaction.findMany({
       where: txWhere,
-      include: { invoice: true },
+      // invoices is now an array — N invoices can stack onto one txn
+      // when split across receipts (two Takealot orders → one swipe).
+      // We sort by createdAt so the "primary" invoice is the first one
+      // attached, which matches the manual-match order in the UI.
+      include: {
+        invoices: {
+          include: { splits: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
       orderBy: { transactionDate: 'asc' },
     });
 
@@ -385,31 +394,45 @@ export class ReconReportsService {
       const card = last4 !== '__nocard__' ? cardByLast4.get(last4) : null;
       const sectionCardholder = card?.cardholderName ?? null;
       let no = 0;
-      const rows: SnapshotTxnRow[] = txns.map((t) => ({
-        no: ++no,
-        transactionId: t.id,
-        date: t.transactionDate.toISOString(),
-        merchant: t.merchant,
-        location: t.description,
-        amount: t.amount,
-        category: t.category,
-        description: t.description,
-        hasVoucher: t.matched,
-        matchedInvoice: t.invoice
-          ? {
-              id: t.invoice.id,
-              supplier: t.invoice.supplier,
-              total: t.invoice.total,
-              currency: t.invoice.currency,
-            }
-          : null,
-        // FFG accounting fields — come from the matched invoice.
-        // Blank rows here visually flag "transaction without a receipt".
-        account: t.invoice?.category ?? null,
-        department: t.invoice?.storeAllocation ?? null,
-        cardholderName: sectionCardholder,
-        userNotes: t.invoice?.notes ?? null,
-      }));
+      const rows: SnapshotTxnRow[] = txns.map((t) => {
+        // Pick the primary matched invoice (first by createdAt). For
+        // split-receipt transactions all invoices show up under the
+        // /reports tab; here we only have room for one row per
+        // transaction, so we use the first and tack a "+N more" hint
+        // onto the supplier label.
+        const primary = t.invoices[0] ?? null;
+        const extraCount = Math.max(0, t.invoices.length - 1);
+        const supplierLabel = primary
+          ? extraCount > 0
+            ? `${primary.supplier} (+${extraCount} more)`
+            : primary.supplier
+          : null;
+        return {
+          no: ++no,
+          transactionId: t.id,
+          date: t.transactionDate.toISOString(),
+          merchant: t.merchant,
+          location: t.description,
+          amount: t.amount,
+          category: t.category,
+          description: t.description,
+          hasVoucher: t.matched,
+          matchedInvoice: primary
+            ? {
+                id: primary.id,
+                supplier: supplierLabel ?? primary.supplier,
+                total: primary.total,
+                currency: primary.currency,
+              }
+            : null,
+          // FFG accounting fields — come from the matched invoice.
+          // Blank rows here visually flag "transaction without a receipt".
+          account: primary?.category ?? null,
+          department: primary?.storeAllocation ?? null,
+          cardholderName: sectionCardholder,
+          userNotes: primary?.notes ?? null,
+        };
+      });
 
       const balanceTransferred = rows.reduce((sum, r) => sum + r.amount, 0);
 

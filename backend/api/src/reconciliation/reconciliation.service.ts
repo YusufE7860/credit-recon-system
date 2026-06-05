@@ -547,11 +547,11 @@ export class ReconciliationService {
         'Invoice is already matched — unlink it first',
       );
     }
-    if (transaction.matched) {
-      throw new BadRequestException(
-        'Transaction is already matched to another invoice',
-      );
-    }
+    // We INTENTIONALLY allow matching to an already-matched transaction.
+    // Split invoices (two Takealot receipts → one R 1044 swipe) need
+    // this — multiple invoices stack onto the same transaction. The
+    // frontend shows a "partial match" banner so users see what they
+    // are joining onto.
 
     return this.prisma.$transaction(async (tx) => {
       const updatedInvoice = await tx.invoice.update({
@@ -610,18 +610,18 @@ export class ReconciliationService {
       }
     }
 
-    return this.prisma.transaction.findMany({
+    // We return both unmatched AND partially-matched transactions so
+    // users can stack split invoices onto a single swipe. The picker
+    // computes used/remaining client-side from the `invoices` array.
+    const txns = await this.prisma.transaction.findMany({
       where: {
         ...userScopeFilter,
-        matched: false,
         // Skip refunds — invoices shouldn't match negative-amount rows.
         amount: { gt: 0 },
         // Skip bank-side fees — they're handled automatically.
         noMatchRequired: false,
       },
       orderBy: { transactionDate: 'desc' },
-      // Capped — a giant unmatched pool would slow the picker. Tune up
-      // if real-world usage hits the wall.
       take: 200,
       select: {
         id: true,
@@ -631,8 +631,49 @@ export class ReconciliationService {
         cardLast4: true,
         category: true,
         description: true,
+        matched: true,
+        invoices: {
+          select: {
+            id: true,
+            total: true,
+            totalZAR: true,
+            supplier: true,
+          },
+        },
       },
     });
+
+    // Annotate each row with how much of the transaction is already
+    // claimed by attached invoices. The picker uses this to:
+    //   - filter out fully-claimed transactions (amount used == txn amount)
+    //   - badge partially-claimed ones with "R X of R Y used"
+    return txns
+      .map((t) => {
+        const claimed = t.invoices.reduce(
+          (sum, inv) => sum + (inv.totalZAR ?? inv.total ?? 0),
+          0,
+        );
+        const remaining = t.amount - claimed;
+        return {
+          id: t.id,
+          transactionDate: t.transactionDate,
+          merchant: t.merchant,
+          amount: t.amount,
+          cardLast4: t.cardLast4,
+          category: t.category,
+          description: t.description,
+          matchedInvoices: t.invoices.map((inv) => ({
+            id: inv.id,
+            supplier: inv.supplier,
+            amount: inv.totalZAR ?? inv.total ?? 0,
+          })),
+          claimedAmount: claimed,
+          remainingAmount: remaining,
+        };
+      })
+      // Drop rows where the bank amount is already fully accounted for
+      // (within a small rand tolerance — bank rounding + FX drift).
+      .filter((t) => t.remainingAmount > 0.5);
   }
 
   // Break an existing match — the invoice goes back to UNMATCHED.
@@ -659,10 +700,22 @@ export class ReconciliationService {
     const previousTransactionId = invoice.transactionId;
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.transaction.update({
-        where: { id: previousTransactionId },
-        data: { matched: false },
+      // Only flip the transaction back to "unmatched" if THIS was its
+      // last attached invoice. If other invoices still stack onto the
+      // same transaction (split-receipt case), keep matched=true so the
+      // recon engine doesn't try to auto-match it again.
+      const siblingCount = await tx.invoice.count({
+        where: {
+          transactionId: previousTransactionId,
+          id: { not: invoiceId },
+        },
       });
+      if (siblingCount === 0) {
+        await tx.transaction.update({
+          where: { id: previousTransactionId },
+          data: { matched: false },
+        });
+      }
       return tx.invoice.update({
         where: { id: invoiceId },
         data: {
