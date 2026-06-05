@@ -20,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { EditRequestsModule } from './edit-requests/edit-requests.module';
 import { MailerModule } from './mailer/mailer.module';
 import { AuthModule } from './auth/auth.module';
+import { SystemModule } from './system/system.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { AuthModule } from './auth/auth.module';
     EditRequestsModule,
     MailerModule,
     AuthModule,
+    SystemModule,
   ],
   providers: [
     // Applies ThrottlerGuard to every route. Per-route overrides via

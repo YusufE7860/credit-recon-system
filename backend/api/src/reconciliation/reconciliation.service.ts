@@ -599,25 +599,36 @@ export class ReconciliationService {
     }
 
     // Narrow to the invoice's owner so admins don't accidentally
-    // cross-match users.
+    // cross-match users. Also pull the invoice's `kind` so we can show
+    // the right candidate pool — positive transactions for PURCHASE
+    // invoices, negative ones for REFUND invoices.
+    let invoiceKind: string = 'PURCHASE';
     if (invoiceId) {
       const inv = await this.prisma.invoice.findUnique({
         where: { id: invoiceId },
-        select: { userId: true },
+        select: { userId: true, kind: true },
       });
       if (inv?.userId) {
         userScopeFilter = { userId: inv.userId };
+      }
+      if (inv?.kind) {
+        invoiceKind = inv.kind;
       }
     }
 
     // We return both unmatched AND partially-matched transactions so
     // users can stack split invoices onto a single swipe. The picker
     // computes used/remaining client-side from the `invoices` array.
+    //
+    // Sign filter: PURCHASE invoices see positive transactions (money
+    // out), REFUND invoices see negative transactions (money back to
+    // the card). Both views skip noMatchRequired bank-fee rows.
+    const amountFilter =
+      invoiceKind === 'REFUND' ? { lt: 0 } : { gt: 0 };
     const txns = await this.prisma.transaction.findMany({
       where: {
         ...userScopeFilter,
-        // Skip refunds — invoices shouldn't match negative-amount rows.
-        amount: { gt: 0 },
+        amount: amountFilter,
         // Skip bank-side fees — they're handled automatically.
         noMatchRequired: false,
       },
@@ -649,11 +660,14 @@ export class ReconciliationService {
     //   - badge partially-claimed ones with "R X of R Y used"
     return txns
       .map((t) => {
+        // Sum the attached invoices in absolute terms — works the same
+        // for refunds (txn amount negative, invoices positive) and
+        // purchases (both positive).
         const claimed = t.invoices.reduce(
           (sum, inv) => sum + (inv.totalZAR ?? inv.total ?? 0),
           0,
         );
-        const remaining = t.amount - claimed;
+        const remaining = Math.abs(t.amount) - claimed;
         return {
           id: t.id,
           transactionDate: t.transactionDate,
@@ -733,8 +747,21 @@ export class ReconciliationService {
   // Returns 0 if any signal hard-fails (e.g. dates too far apart),
   // saving us from explicitly filtering.
   private scoreMatch(invoice: Invoice, transaction: Transaction): number {
-    const invoiceAmountZAR = invoice.totalZAR ?? invoice.total;
-    const amountScore = this.scoreAmount(invoiceAmountZAR, transaction.amount);
+    // ---- Sign alignment ----
+    // PURCHASE invoices match against positive transactions (money out).
+    // REFUND invoices match against negative transactions (money back).
+    // A mismatch is a hard reject — no point comparing amounts when the
+    // invoice is on the wrong side of zero.
+    if (invoice.kind === 'REFUND' && transaction.amount >= 0) return 0;
+    if (invoice.kind !== 'REFUND' && transaction.amount < 0) return 0;
+
+    // ---- Effective amount ----
+    // Subtract any wallet/store credit applied to this purchase. The
+    // printed `total` stays untouched (auditable as on the receipt) but
+    // matching uses the net cash outflow that actually hit the card.
+    const grossZAR = invoice.totalZAR ?? invoice.total;
+    const effectiveZAR = grossZAR - (invoice.creditApplied ?? 0);
+    const amountScore = this.scoreAmount(effectiveZAR, transaction.amount);
     if (amountScore === 0) return 0;
 
     const dateScore = this.scoreDate(

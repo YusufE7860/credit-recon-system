@@ -52,6 +52,11 @@ type Invoice = {
   createdAt: string;
   // Optional line-item splits (multi-category invoices).
   splits?: InvoiceSplit[];
+  // Refund / credit-note support.
+  kind?: 'PURCHASE' | 'REFUND';
+  // Wallet/store credit deducted from total before matching against the
+  // statement. Common with Takealot wallet refunds applied to next order.
+  creditApplied?: number;
 };
 
 type InvoiceSplit = {
@@ -277,6 +282,8 @@ export default function InvoiceDetailPage() {
           invoiceNumber: inv.invoiceNumber,
           total: inv.total,
           vat: inv.vat,
+          kind: inv.kind ?? 'PURCHASE',
+          creditApplied: inv.creditApplied ?? 0,
         });
 
         if (inv.filePath) {
@@ -310,9 +317,19 @@ export default function InvoiceDetailPage() {
     // remaining "financial" text fields (supplier/invoiceNumber) only
     // go when the invoice is flagged for review (OCR-confidence path).
     const payload: Record<string, unknown> = {};
-    const editable = ['category', 'storeAllocation', 'notes'] as const;
+    const editable = [
+      'category',
+      'storeAllocation',
+      'notes',
+      // kind + creditApplied flow through the metadata-edit code path
+      // on the backend (they don't change the printed total).
+      'kind',
+      'creditApplied',
+    ] as const;
     for (const k of editable) {
-      if (edits[k] !== invoice[k]) payload[k] = edits[k];
+      if (edits[k] !== (invoice[k] ?? (k === 'creditApplied' ? 0 : k === 'kind' ? 'PURCHASE' : null))) {
+        payload[k] = edits[k];
+      }
     }
     if (invoice.requiresReview) {
       const finFields = ['supplier', 'invoiceNumber'] as const;
@@ -335,6 +352,8 @@ export default function InvoiceDetailPage() {
         invoiceNumber: updated.invoiceNumber,
         total: updated.total,
         vat: updated.vat,
+        kind: updated.kind ?? 'PURCHASE',
+        creditApplied: updated.creditApplied ?? 0,
       });
       setMessage('Saved.');
     } catch (err) {
@@ -667,6 +686,85 @@ export default function InvoiceDetailPage() {
                   </button>
                 ) : null}
               </div>
+              {/* Invoice kind toggle: PURCHASE vs REFUND (credit note).
+                  Hidden from UPLOADERs since they can't see money fields
+                  at all — kind doesn't make sense in isolation for them.
+                  REFUND invoices match against negative-amount statement
+                  lines (money coming back to the card). */}
+              {!hideMoney && (
+                <div className="mb-4">
+                  <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
+                    Kind
+                  </label>
+                  <div className="flex gap-2">
+                    {(['PURCHASE', 'REFUND'] as const).map((k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setEdits({ ...edits, kind: k })}
+                        className={`px-3 py-1.5 text-sm rounded-lg border ${
+                          (edits.kind ?? 'PURCHASE') === k
+                            ? k === 'REFUND'
+                              ? 'bg-red-50 border-red-300 text-red-700 font-medium'
+                              : 'bg-orange-50 border-orange-300 text-orange-700 font-medium'
+                            : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        {k === 'PURCHASE' ? 'Purchase' : 'Refund / credit note'}
+                      </button>
+                    ))}
+                  </div>
+                  {edits.kind === 'REFUND' && (
+                    <p className="text-xs text-red-700 mt-2">
+                      This invoice will match a NEGATIVE-amount line on
+                      the statement (money refunded back to the card).
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Credit applied — wallet/store credit deducted from the
+                  printed total before matching. The card only saw the
+                  difference, so the matcher uses (total - creditApplied). */}
+              {!hideMoney && (
+                <div className="mb-4">
+                  <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
+                    Wallet / store credit applied
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500 text-sm">R</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={edits.creditApplied ?? 0}
+                      onChange={(e) =>
+                        setEdits({
+                          ...edits,
+                          creditApplied: parseFloat(e.target.value) || 0,
+                        })
+                      }
+                      className="w-32 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      placeholder="0.00"
+                    />
+                    {(edits.creditApplied ?? 0) > 0 && invoice && (
+                      <span className="text-xs text-gray-600">
+                        → effective R{' '}
+                        {(
+                          (invoice.totalZAR ?? invoice.total) -
+                          (edits.creditApplied ?? 0)
+                        ).toFixed(2)}{' '}
+                        will match
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    For purchases partly paid by wallet credit (e.g.
+                    Takealot wallet refund used on a new order).
+                  </p>
+                </div>
+              )}
+
               <DetailField
                 label="Category"
                 value={edits.category ?? ''}

@@ -21,6 +21,15 @@ enum ReconStatus {
   REJECTED   // admin rejected the invoice
 }
 
+// Distinguishes a normal purchase invoice from a credit note / refund slip.
+// A REFUND invoice represents money coming BACK to the card and matches
+// against a negative-amount transaction on the statement. PURCHASE is
+// the default and what 99% of invoices will be.
+enum InvoiceKind {
+  PURCHASE
+  REFUND
+}
+
 enum Role {
   USER       // regular employee, sees only their own data
   UPLOADER   // assistant who uploads invoices on behalf of one or more USERs.
@@ -194,6 +203,19 @@ model Invoice {
   // shift historical matches.
   totalZAR        Float?
   exchangeRate    Float?
+
+  // PURCHASE (default) or REFUND. REFUND invoices represent money
+  // coming back to the card — they match against negative-amount
+  // transactions on the statement.
+  kind            InvoiceKind @default(PURCHASE)
+
+  // Wallet/store credit applied to this purchase. Common scenario:
+  // Takealot refunds a previous order to the wallet, then the wallet
+  // balance gets used on a subsequent purchase with only the difference
+  // hitting the card. We keep the gross `total` (what's printed on the
+  // receipt) and record the credit separately so the matcher can use
+  // (total - creditApplied) as the effective amount that hit the card.
+  creditApplied   Float    @default(0)
 
   // ---- User-editable metadata ----
   category        String?

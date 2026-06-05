@@ -105,6 +105,15 @@ export interface UpdateInvoiceInput {
   total?: number;
   vat?: number;
   subtotal?: number;
+  // Refund / credit-note support.
+  // kind: 'PURCHASE' (default) or 'REFUND' (credit note matching a
+  // negative-amount statement line). Editing this is treated as a
+  // metadata edit so UPLOADERs can request access through the normal
+  // EditRequest flow.
+  kind?: 'PURCHASE' | 'REFUND';
+  // creditApplied: wallet/store credit deducted from the printed total
+  // before matching against the statement. Treated as metadata too.
+  creditApplied?: number;
 }
 
 // Filter shape for the list endpoint.
@@ -621,7 +630,12 @@ export class InvoicesService {
     const editingMetadata =
       input.category !== undefined ||
       input.storeAllocation !== undefined ||
-      input.notes !== undefined;
+      input.notes !== undefined ||
+      // kind + creditApplied are accounting flags rather than amounts
+      // (the printed total stays untouched), so they go through the
+      // metadata unlock path rather than the financial one.
+      input.kind !== undefined ||
+      input.creditApplied !== undefined;
 
     // Metadata permission. UPLOADER needs an active metadata unlock;
     // everyone else (owner/admin/reporting) edits freely.
@@ -701,6 +715,12 @@ export class InvoicesService {
           category: input.category,
           storeAllocation: input.storeAllocation,
           notes: input.notes,
+          // Refund/credit-note fields. Pass through when supplied.
+          kind: input.kind,
+          creditApplied:
+            input.creditApplied !== undefined
+              ? Math.max(0, input.creditApplied)
+              : undefined,
           supplier: input.supplier,
           invoiceNumber: input.invoiceNumber,
           invoiceDate: input.invoiceDate

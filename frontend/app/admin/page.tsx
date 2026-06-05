@@ -32,6 +32,11 @@ const SECTIONS = [
     description: 'Immutable record of every important action across the system.',
     href: '/admin/audit-logs',
   },
+  {
+    title: 'System update',
+    description: 'Pull the latest release from GitHub and rebuild — without SSH.',
+    href: '/admin/system',
+  },
 ];
 
 export default function AdminLandingPage() {
