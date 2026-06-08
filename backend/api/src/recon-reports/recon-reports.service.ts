@@ -36,6 +36,23 @@ export interface SnapshotTxnRow {
   account: string | null;       // = invoice.category (the official expense category)
   department: string | null;    // = invoice.storeAllocation
   cardholderName: string | null; // derived from the card section the row lives in
+  // Detail breakdown rendered as sub-rows under the main one. Filled
+  // when EITHER the invoice has line splits (multi-store / multi-
+  // category on a single invoice) OR multiple invoices are attached
+  // to the same transaction (split-receipt case).
+  subRows?: SnapshotSubRow[];
+}
+
+// One "child" row under the main transaction row. Renders without a
+// number or amount (the parent row carries those) but shows the
+// breakdown the accountant needs: which invoice, which category,
+// which store, how much.
+export interface SnapshotSubRow {
+  label: string;          // e.g. "Split: Stationery" or "Invoice #2"
+  account: string | null;  // category
+  department: string | null; // store
+  amount: number | null;
+  notes: string | null;
 }
 
 // Per-card section within a snapshot.
@@ -108,9 +125,13 @@ export class ReconReportsService {
       // when split across receipts (two Takealot orders → one swipe).
       // We sort by createdAt so the "primary" invoice is the first one
       // attached, which matches the manual-match order in the UI.
+      // Splits sorted by their sortOrder so the renderer preserves
+      // whatever order the user entered.
       include: {
         invoices: {
-          include: { splits: true },
+          include: {
+            splits: { orderBy: { sortOrder: 'asc' } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -365,8 +386,9 @@ export class ReconReportsService {
       cardLast4: string | null;
       matched: boolean;
       // We extended the include() in generateSnapshotsForRun so that
-      // category + storeAllocation + notes come down with each invoice.
-      // Array because split invoices (multi-receipt) can stack on one txn.
+      // category + storeAllocation + notes + splits come down with
+      // each invoice. Array because split invoices (multi-receipt)
+      // can stack on one txn.
       invoices: Array<{
         id: string;
         supplier: string;
@@ -375,6 +397,14 @@ export class ReconReportsService {
         category: string | null;
         storeAllocation: string | null;
         notes: string | null;
+        kind?: string;
+        creditApplied?: number;
+        splits?: Array<{
+          id: string;
+          category: string;
+          store: string | null;
+          amount: number;
+        }>;
       }>;
     }>,
     cardByLast4: Map<string, { last4: string | null; maskedNumber: string; cardholderName: string | null }>,
@@ -396,11 +426,9 @@ export class ReconReportsService {
       const sectionCardholder = card?.cardholderName ?? null;
       let no = 0;
       const rows: SnapshotTxnRow[] = txns.map((t) => {
-        // Pick the primary matched invoice (first by createdAt). For
-        // split-receipt transactions all invoices show up under the
-        // /reports tab; here we only have room for one row per
-        // transaction, so we use the first and tack a "+N more" hint
-        // onto the supplier label.
+        // Pick the primary matched invoice (first by createdAt). The
+        // sub-rows array surfaces the rest: other attached invoices
+        // (split-receipt) AND any line splits on the primary invoice.
         const primary = t.invoices[0] ?? null;
         const extraCount = Math.max(0, t.invoices.length - 1);
         const supplierLabel = primary
@@ -408,6 +436,65 @@ export class ReconReportsService {
             ? `${primary.supplier} (+${extraCount} more)`
             : primary.supplier
           : null;
+
+        // Build sub-rows.
+        const subRows: SnapshotSubRow[] = [];
+
+        // (1) Splits on the PRIMARY invoice. Renders each split line so
+        // the accountant sees the per-store / per-category breakdown.
+        if (primary?.splits && primary.splits.length > 0) {
+          for (const s of primary.splits) {
+            subRows.push({
+              label: `Split: ${s.category}`,
+              account: s.category,
+              department: s.store,
+              amount: s.amount,
+              notes: null,
+            });
+          }
+        }
+
+        // (2) Additional invoices (split-receipt case). Each gets its
+        // own sub-row with its supplier + total + category. If THAT
+        // invoice itself has splits, we render its splits one level
+        // deeper (still as sub-rows, prefixed with the supplier).
+        for (let i = 1; i < t.invoices.length; i++) {
+          const inv = t.invoices[i];
+          const isRefund = inv.kind === 'REFUND';
+          subRows.push({
+            label: `Invoice ${i + 1}${isRefund ? ' (refund)' : ''}: ${inv.supplier}`,
+            account: inv.category,
+            department: inv.storeAllocation,
+            // Refund amounts shown negative so the column sums to the
+            // transaction net.
+            amount: isRefund ? -inv.total : inv.total,
+            notes: inv.notes,
+          });
+          if (inv.splits && inv.splits.length > 0) {
+            for (const s of inv.splits) {
+              subRows.push({
+                label: `  · ${inv.supplier} / ${s.category}`,
+                account: s.category,
+                department: s.store,
+                amount: isRefund ? -s.amount : s.amount,
+                notes: null,
+              });
+            }
+          }
+        }
+
+        // Account / department on the parent row stay representative
+        // of the WHOLE transaction. When there are splits or multiple
+        // invoices we mark them "Multiple" so the accountant looks at
+        // the sub-rows for the breakdown.
+        const hasBreakdown = subRows.length > 0;
+        const parentAccount = hasBreakdown
+          ? 'Multiple — see breakdown'
+          : primary?.category ?? null;
+        const parentDept = hasBreakdown
+          ? 'Multiple — see breakdown'
+          : primary?.storeAllocation ?? null;
+
         return {
           no: ++no,
           transactionId: t.id,
@@ -426,12 +513,11 @@ export class ReconReportsService {
                 currency: primary.currency,
               }
             : null,
-          // FFG accounting fields — come from the matched invoice.
-          // Blank rows here visually flag "transaction without a receipt".
-          account: primary?.category ?? null,
-          department: primary?.storeAllocation ?? null,
+          account: parentAccount,
+          department: parentDept,
           cardholderName: sectionCardholder,
           userNotes: primary?.notes ?? null,
+          subRows: subRows.length > 0 ? subRows : undefined,
         };
       });
 

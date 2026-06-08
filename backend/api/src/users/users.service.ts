@@ -38,6 +38,14 @@ export interface UpdateUserInput {
   managedUserIds?: string[];
 }
 
+// Email matching is case-insensitive throughout — users typing
+// "Foo@Bar.com" vs "foo@bar.com" should resolve to the same account.
+// We normalise to lowercase on every write AND use insensitive-mode
+// queries for reads so historical mixed-case rows still match.
+function normalizeEmail(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
@@ -54,11 +62,12 @@ export class UsersService {
       );
     }
 
-    // Reject duplicate emails up-front with a clean 409 instead of
-    // letting Prisma's unique constraint bubble out.
-    // Only fetch the `id` — no need to pull a password hash into memory.
-    const existing = await this.prisma.user.findUnique({
-      where: { email: input.email },
+    const email = normalizeEmail(input.email);
+
+    // Case-insensitive duplicate check so admin can't accidentally
+    // create "John@Example.com" when "john@example.com" already exists.
+    const existing = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
       select: { id: true },
     });
     if (existing) {
@@ -72,7 +81,7 @@ export class UsersService {
     return this.prisma.user.create({
       data: {
         name: input.name,
-        email: input.email,
+        email,
         password: hashed,
         role: finalRole,
         // Only stored when role is UPLOADER — silently dropped otherwise
@@ -104,10 +113,13 @@ export class UsersService {
     await this.getUserById(id);
 
     if (input.email !== undefined) {
-      // Block duplicate emails. Only fetch `id` — no need to load the
-      // password hash into memory just to test for existence.
+      const normalised = normalizeEmail(input.email);
+      // Case-insensitive duplicate check.
       const collision = await this.prisma.user.findFirst({
-        where: { email: input.email, NOT: { id } },
+        where: {
+          email: { equals: normalised, mode: 'insensitive' },
+          NOT: { id },
+        },
         select: { id: true },
       });
       if (collision) {
@@ -115,6 +127,7 @@ export class UsersService {
           'A user with that email already exists',
         );
       }
+      input.email = normalised;
     }
 
     // managedUserIds only kept when role stays/becomes UPLOADER. If the
@@ -174,7 +187,12 @@ export class UsersService {
   }
 
   // Internal — returns password hash. Only used by AuthService.
+  // Case-insensitive so users can type "Foo@Bar.com" or "foo@bar.com"
+  // and reach the same account. findFirst (not findUnique) because the
+  // unique constraint can't be combined with insensitive mode in Prisma.
   async findByEmail(email: string) {
-    return this.prisma.user.findUnique({ where: { email } });
+    return this.prisma.user.findFirst({
+      where: { email: { equals: normalizeEmail(email), mode: 'insensitive' } },
+    });
   }
 }

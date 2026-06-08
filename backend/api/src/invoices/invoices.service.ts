@@ -88,6 +88,11 @@ export interface UploadInvoiceMeta {
   // For UPLOADER role: which managed user this invoice is "for".
   // Ignored for other roles (invoice always belongs to current user).
   ownerId?: string;
+  // Optional line splits — JSON-encoded array of {category, store, amount}.
+  // When present, the invoice gets per-line breakdown rows created
+  // after OCR. Sum is validated against the OCR'd total; mismatches
+  // get the invoice flagged for review rather than rejected outright.
+  splits?: string;
 }
 
 // Fields a user can update after creation.
@@ -448,6 +453,55 @@ export class InvoicesService {
         uploaderId,
       },
     });
+
+    // Persist any upload-time line splits the user entered. We accept
+    // them as a JSON string on the multipart form. If parsing fails or
+    // the sum doesn't match the OCR'd total within 1c, the invoice
+    // gets flagged for review (rather than rejected) — the splits
+    // still get saved so the operator can fix them on the detail page.
+    if (meta.splits) {
+      try {
+        const parsed = JSON.parse(meta.splits);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const clean = parsed
+            .filter(
+              (s: { category?: string; amount?: number }) =>
+                s && typeof s.category === 'string' && s.category.trim() &&
+                typeof s.amount === 'number' && s.amount > 0,
+            )
+            .map((s: { category: string; store?: string | null; amount: number }, idx: number) => ({
+              invoiceId: created.id,
+              category: s.category.trim(),
+              store: s.store?.toString().trim() || null,
+              amount: s.amount,
+              sortOrder: idx,
+            }));
+          if (clean.length > 0) {
+            await this.prisma.invoiceSplit.createMany({ data: clean });
+            const sum = clean.reduce(
+              (acc: number, s: { amount: number }) => acc + s.amount,
+              0,
+            );
+            // Sanity check: split total should equal invoice total. If
+            // off by more than 1c, flag for review so the operator
+            // notices and fixes on the detail page.
+            if (Math.abs(sum - finalTotal) > 0.01) {
+              await this.prisma.invoice.update({
+                where: { id: created.id },
+                data: { requiresReview: true },
+              });
+              this.logger.warn(
+                `Invoice ${created.id}: split sum R ${sum.toFixed(2)} doesn't match total R ${finalTotal.toFixed(2)} — flagged for review`,
+              );
+            }
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Invoice ${created.id}: failed to parse upload-time splits: ${(err as Error).message}`,
+        );
+      }
+    }
 
     // Auto-match the newly created invoice against the unmatched
     // transaction pool. Async-safe: any failure logs and continues —

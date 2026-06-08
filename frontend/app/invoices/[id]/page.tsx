@@ -1223,8 +1223,8 @@ export default function InvoiceDetailPage() {
                                       className={`text-xs mt-1 ${rem > 0 ? 'text-purple-700' : 'text-red-700'}`}
                                     >
                                       {rem > 0
-                                        ? `R ${rem.toFixed(2)} to balance`
-                                        : `R ${Math.abs(rem).toFixed(2)} over`}
+                                        ? `add R ${rem.toFixed(2)} in purchases`
+                                        : `R ${Math.abs(rem).toFixed(2)} over (remove or add a credit)`}
                                     </p>
                                   );
                                 })()}

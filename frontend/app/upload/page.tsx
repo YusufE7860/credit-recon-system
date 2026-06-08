@@ -35,6 +35,12 @@ interface QueueItem {
   // to the batch default at upload time.
   category: string;
   storeAllocation: string;
+  // Optional per-invoice line splits — when the receipt covers spend
+  // across multiple stores or categories. When `splits` is non-empty,
+  // the single category/store fields above are ignored at upload time
+  // and the breakdown is applied after OCR runs. Sum should match the
+  // OCR'd total; if it doesn't, the invoice gets flagged for review.
+  splits: Array<{ category: string; store: string; amount: number }>;
 }
 
 // `crypto.randomUUID()` only exists in *secure contexts* (HTTPS or
@@ -196,6 +202,7 @@ export default function UploadPage() {
           reason: '',
           category: batchCategory,
           storeAllocation: batchStore,
+          splits: [], // empty by default; user can open the split editor
         });
       } catch (err) {
         // URL.createObjectURL can throw in some sandboxed contexts.
@@ -209,6 +216,7 @@ export default function UploadPage() {
           reason: '',
           category: batchCategory,
           storeAllocation: batchStore,
+          splits: [],
         });
       }
     }
@@ -301,6 +309,22 @@ export default function UploadPage() {
         // backend validates ownerId is in this UPLOADER's managedUserIds.
         if (isUploader && uploadOwnerId) {
           fd.append('ownerId', uploadOwnerId);
+        }
+        // Line splits — multi-category/store breakdown entered by the
+        // user before upload. Backend validates the sum against the
+        // OCR'd total post-create and flags for review if it doesn't
+        // match. Sent as JSON since FormData can't transport arrays.
+        if (item.splits.length > 0) {
+          const clean = item.splits
+            .filter((s) => s.category.trim() && s.amount > 0)
+            .map((s) => ({
+              category: s.category.trim(),
+              store: s.store.trim() || null,
+              amount: s.amount,
+            }));
+          if (clean.length > 0) {
+            fd.append('splits', JSON.stringify(clean));
+          }
         }
         const result = await apiUpload<{
           id: string;
@@ -725,6 +749,28 @@ export default function UploadPage() {
                           </div>
                         )}
 
+                        {/* Line splits — when this invoice covers
+                            multiple stores/categories. Only shown
+                            before upload (success rows stay clean).
+                            Sum doesn't have to match anything client-
+                            side: backend compares against the OCR'd
+                            total and flags for review if off. */}
+                        {item.status !== 'success' && (
+                          <QueueItemSplitEditor
+                            item={item}
+                            categories={categories}
+                            stores={stores}
+                            disabled={item.status === 'uploading' || busy}
+                            onChange={(splits) =>
+                              setQueue((q) =>
+                                q.map((i) =>
+                                  i.id === item.id ? { ...i, splits } : i,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+
                         <QueueItemStatusLine item={item} />
                       </div>
 
@@ -906,6 +952,167 @@ function QueueItemStatusLine({ item }: { item: QueueItem }) {
         <p className="text-xs text-red-600 mt-1">✗ {item.error}</p>
       );
   }
+}
+
+// Inline split editor — collapsed by default ("+ Split into multiple
+// stores" link), expands to a small table where the user enters
+// category/store/amount per line. Splits are stored on the queue item
+// and sent in the upload's FormData. Backend validates the sum against
+// the OCR'd total post-upload (we don't know the total client-side so
+// we can't validate strictly here; we just show the running sum as a
+// hint).
+function QueueItemSplitEditor({
+  item,
+  categories,
+  stores,
+  disabled,
+  onChange,
+}: {
+  item: QueueItem;
+  categories: CategoryOption[];
+  stores: StoreOption[];
+  disabled: boolean;
+  onChange: (splits: QueueItem['splits']) => void;
+}) {
+  const [open, setOpen] = useState(item.splits.length > 0);
+  const splits = item.splits;
+
+  function addRow() {
+    onChange([...splits, { category: '', store: '', amount: 0 }]);
+  }
+  function updateRow(idx: number, patch: Partial<QueueItem['splits'][0]>) {
+    onChange(splits.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  }
+  function removeRow(idx: number) {
+    onChange(splits.filter((_, i) => i !== idx));
+  }
+
+  if (!open && splits.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(true);
+          if (splits.length === 0) addRow();
+        }}
+        disabled={disabled}
+        className="text-xs text-blue-600 hover:underline mt-1.5 disabled:opacity-40"
+      >
+        + Split into multiple stores or categories
+      </button>
+    );
+  }
+
+  const sum = splits.reduce((acc, s) => acc + (s.amount || 0), 0);
+
+  return (
+    <div className="mt-2 p-2 bg-blue-50/60 rounded border border-blue-200">
+      <div className="flex justify-between items-center mb-2">
+        <p className="text-xs font-medium text-blue-900">
+          Line splits ({splits.length})
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            onChange([]);
+            setOpen(false);
+          }}
+          disabled={disabled}
+          className="text-xs text-red-600 hover:underline"
+        >
+          Clear splits
+        </button>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-gray-500">
+            <th className="pb-1">Category</th>
+            <th className="pb-1">Store</th>
+            <th className="pb-1 text-right w-20">Amount</th>
+            <th className="pb-1 w-6"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {splits.map((s, idx) => (
+            <tr key={idx}>
+              <td className="pr-1 py-0.5">
+                <select
+                  value={s.category}
+                  onChange={(e) => updateRow(idx, { category: e.target.value })}
+                  disabled={disabled}
+                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                >
+                  <option value="">— Category —</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td className="pr-1 py-0.5">
+                <select
+                  value={s.store}
+                  onChange={(e) => updateRow(idx, { store: e.target.value })}
+                  disabled={disabled}
+                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                >
+                  <option value="">— Store —</option>
+                  {stores.map((st) => (
+                    <option key={st.id} value={st.name}>
+                      {st.name}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td className="pr-1 py-0.5">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={s.amount}
+                  onChange={(e) =>
+                    updateRow(idx, {
+                      amount: parseFloat(e.target.value) || 0,
+                    })
+                  }
+                  disabled={disabled}
+                  className="w-20 text-right border border-gray-300 rounded px-1.5 py-1 text-xs"
+                />
+              </td>
+              <td className="text-center py-0.5">
+                <button
+                  type="button"
+                  onClick={() => removeRow(idx)}
+                  disabled={disabled}
+                  className="text-gray-400 hover:text-red-600 text-base leading-none"
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="flex justify-between items-center mt-2">
+        <button
+          type="button"
+          onClick={addRow}
+          disabled={disabled}
+          className="text-xs text-blue-600 hover:underline"
+        >
+          + Add line
+        </button>
+        <p className="text-xs text-blue-900">
+          Sum: R {sum.toFixed(2)}{' '}
+          <span className="text-gray-500">
+            (must match invoice total after OCR)
+          </span>
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function Field({

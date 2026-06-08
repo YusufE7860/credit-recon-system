@@ -523,7 +523,7 @@ export default function InvoicesPage() {
                                       className={`text-xs mt-1 ${rem > 0 ? 'text-purple-700' : 'text-red-700'}`}
                                     >
                                       {rem > 0
-                                        ? `R ${rem.toFixed(2)} to balance`
+                                        ? `add R ${rem.toFixed(2)} in purchases`
                                         : `R ${Math.abs(rem).toFixed(2)} over`}
                                     </p>
                                   );

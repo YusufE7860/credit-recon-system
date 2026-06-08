@@ -276,6 +276,38 @@ function writeSection(sheet: ExcelJS.Worksheet, section: SnapshotCardSection) {
     if (!r.hasVoucher) {
       voucherCell.font = { bold: true, color: { argb: 'FFCC0000' } };
     }
+
+    // Detail sub-rows below the main transaction — one per invoice
+    // split (multi-store/category on one invoice) AND one per
+    // additional attached invoice (split-receipt case). Indented
+    // visually (italic + grey + no row number) so they're clearly a
+    // breakdown of the parent, not a separate transaction.
+    if (r.subRows && r.subRows.length > 0) {
+      for (const sub of r.subRows) {
+        const subRow = sheet.addRow([
+          '',                     // No (intentionally blank)
+          '',                     // Date
+          `   ${sub.label}`,       // indented label in "Transaction Details"
+          '',                     // Loc
+          sub.amount ?? '',        // Amount
+          sub.notes ?? '',         // Description
+          '',                     // Voucher Y/N — empty on sub-rows
+          sub.account ?? '',
+          '',                     // Name — left blank on sub-rows
+          sub.department ?? '',
+        ]);
+        subRow.font = { italic: true, color: { argb: 'FF666666' } };
+        if (sub.amount != null) {
+          styleAmountCell(subRow.getCell(COL_AMOUNT));
+          if (sub.amount < 0) {
+            subRow.getCell(COL_AMOUNT).font = {
+              italic: true,
+              color: { argb: COLOUR_CR_GREEN },
+            };
+          }
+        }
+      }
+    }
   }
 
   // Balance transferred (section total).
