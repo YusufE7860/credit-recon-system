@@ -615,18 +615,19 @@ export default function UploadPage() {
                   {queue.map((item) => (
                     <li
                       key={item.id}
-                      className="flex items-center gap-3 p-2 rounded-lg border border-gray-200"
+                      className="flex items-start gap-2 sm:gap-3 p-2 sm:p-3 rounded-lg border border-gray-200"
                     >
                       {/* Thumbnail. HEIC images can't be rendered by
                           browsers, so we onError-fallback to a small
                           placeholder rather than showing a broken
-                          (invisible) image element. */}
+                          (invisible) image element. Smaller on mobile
+                          so the form area gets more horizontal room. */}
                       {item.file.type.startsWith('image/') && item.previewUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={item.previewUrl}
                           alt=""
-                          className="w-14 h-14 object-cover rounded bg-gray-100"
+                          className="w-10 h-10 sm:w-14 sm:h-14 flex-shrink-0 object-cover rounded bg-gray-100"
                           onError={(e) => {
                             // Hide the broken image and reveal the
                             // sibling placeholder underneath.
@@ -641,7 +642,7 @@ export default function UploadPage() {
                           (PDF), when no preview URL exists, or when the
                           img above failed to load (HEIC etc). */}
                       <div
-                        className="w-14 h-14 bg-gray-100 rounded flex items-center justify-center text-[10px] text-gray-500 uppercase tracking-wider"
+                        className="w-10 h-10 sm:w-14 sm:h-14 flex-shrink-0 bg-gray-100 rounded items-center justify-center text-[10px] text-gray-500 uppercase tracking-wider"
                         style={{
                           display:
                             item.file.type.startsWith('image/') && item.previewUrl
@@ -1006,7 +1007,7 @@ function QueueItemSplitEditor({
   const sum = splits.reduce((acc, s) => acc + (s.amount || 0), 0);
 
   return (
-    <div className="mt-2 p-2 bg-blue-50/60 rounded border border-blue-200">
+    <div className="mt-2 p-2.5 bg-blue-50/60 rounded border border-blue-200">
       <div className="flex justify-between items-center mb-2">
         <p className="text-xs font-medium text-blue-900">
           Line splits ({splits.length})
@@ -1023,91 +1024,98 @@ function QueueItemSplitEditor({
           Clear splits
         </button>
       </div>
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-left text-gray-500">
-            <th className="pb-1">Category</th>
-            <th className="pb-1">Store</th>
-            <th className="pb-1 text-right w-20">Amount</th>
-            <th className="pb-1 w-6"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {splits.map((s, idx) => (
-            <tr key={idx}>
-              <td className="pr-1 py-0.5">
-                <select
-                  value={s.category}
-                  onChange={(e) => updateRow(idx, { category: e.target.value })}
-                  disabled={disabled}
-                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
-                >
-                  <option value="">— Category —</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td className="pr-1 py-0.5">
-                <select
-                  value={s.store}
-                  onChange={(e) => updateRow(idx, { store: e.target.value })}
-                  disabled={disabled}
-                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
-                >
-                  <option value="">— Store —</option>
-                  {stores.map((st) => (
-                    <option key={st.id} value={st.name}>
-                      {st.name}
-                    </option>
-                  ))}
-                </select>
-              </td>
-              <td className="pr-1 py-0.5">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={s.amount}
-                  onChange={(e) =>
-                    updateRow(idx, {
-                      amount: parseFloat(e.target.value) || 0,
-                    })
-                  }
-                  disabled={disabled}
-                  className="w-20 text-right border border-gray-300 rounded px-1.5 py-1 text-xs"
-                />
-              </td>
-              <td className="text-center py-0.5">
-                <button
-                  type="button"
-                  onClick={() => removeRow(idx)}
-                  disabled={disabled}
-                  className="text-gray-400 hover:text-red-600 text-base leading-none"
-                  title="Remove"
-                >
-                  ×
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="flex justify-between items-center mt-2">
+
+      {/* Stacked-card layout. Each row is its own white card with the
+          Category and Store dropdowns stacked vertically on phones (full
+          width = touch-friendly), then a horizontal row for Amount + ×
+          at the bottom. Way easier to fill in on a phone than a
+          three-column table. */}
+      <div className="space-y-2">
+        {splits.map((s, idx) => (
+          <div
+            key={idx}
+            className="bg-white border border-blue-200 rounded p-2 space-y-1.5"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500 font-medium">
+                Line {idx + 1}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeRow(idx)}
+                disabled={disabled}
+                className="text-gray-400 hover:text-red-600 text-lg leading-none px-1"
+                title="Remove line"
+                aria-label="Remove line"
+              >
+                ×
+              </button>
+            </div>
+            <select
+              value={s.category}
+              onChange={(e) => updateRow(idx, { category: e.target.value })}
+              disabled={disabled}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+            >
+              <option value="">— Category —</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={s.store}
+              onChange={(e) => updateRow(idx, { store: e.target.value })}
+              disabled={disabled}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+            >
+              <option value="">— Store —</option>
+              {stores.map((st) => (
+                <option key={st.id} value={st.name}>
+                  {st.name}
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Amount</span>
+              <span className="text-xs text-gray-400">R</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={s.amount}
+                onChange={(e) =>
+                  updateRow(idx, {
+                    amount: parseFloat(e.target.value) || 0,
+                  })
+                }
+                disabled={disabled}
+                className="flex-1 text-right border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:bg-gray-100"
+                placeholder="0.00"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Add-line + sum hint stacked on mobile (each on its own line),
+          inline on sm+ where there's room. Putting the sum on a
+          separate line avoids the wrap-into-link mess we had before. */}
+      <div className="mt-2.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1.5">
         <button
           type="button"
           onClick={addRow}
           disabled={disabled}
-          className="text-xs text-blue-600 hover:underline"
+          className="text-xs text-blue-700 hover:underline font-medium text-left"
         >
-          + Add line
+          + Add another line
         </button>
         <p className="text-xs text-blue-900">
-          Sum: R {sum.toFixed(2)}{' '}
+          Sum:{' '}
+          <span className="font-semibold">R {sum.toFixed(2)}</span>
           <span className="text-gray-500">
-            (must match invoice total after OCR)
+            {' '}— must match invoice total
           </span>
         </p>
       </div>
