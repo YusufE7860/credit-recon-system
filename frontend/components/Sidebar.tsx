@@ -7,8 +7,10 @@ import Image from 'next/image';
 import { logoutUser } from '@/lib/auth';
 import { useCurrentUser, type Role } from '@/lib/user-context';
 import NotificationBell from './NotificationBell';
-import MobileTopBar from './MobileTopBar';
-import MobileBottomNav from './MobileBottomNav';
+// MobileTopBar and MobileBottomNav are rendered from the root layout
+// (app/layout.tsx) so they sit outside the page's flex row — otherwise
+// they'd lay out as flex children next to the page content and the
+// mobile view would split into two columns. Don't import them here.
 
 // Each nav item declares which roles are allowed to see it.
 interface NavItem {
@@ -76,16 +78,10 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile gets a solid top bar (logo + profile chip) and a
-          three-tab bottom navigation with a raised central Upload
-          button. The previous hamburger drawer is gone — everything
-          not on the bottom bar lives in the profile chip dropdown. */}
-      <MobileTopBar />
-      <MobileBottomNav />
-
-      {/* Desktop sidebar — unchanged from the previous version.
-          md:flex makes it visible at and above the md breakpoint;
-          on mobile it's hidden entirely now. */}
+      {/* Desktop sidebar only. The mobile top bar and bottom nav live
+          in app/layout.tsx so they sit outside the page's flex row
+          (otherwise they'd lay out as flex children alongside the page
+          content and split the mobile viewport in half). */}
       <aside
         className="hidden md:flex w-64 bg-black text-white p-6 flex-col md:sticky md:top-0 md:z-auto md:h-screen"
       >

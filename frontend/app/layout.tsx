@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { UserProvider } from "@/lib/user-context";
+import MobileTopBar from "@/components/MobileTopBar";
+import MobileBottomNav from "@/components/MobileBottomNav";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -61,7 +63,15 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <UserProvider>{children}</UserProvider>
+        <UserProvider>
+          {/* Mobile-only chrome. Both components self-hide on auth
+              screens and on md+ breakpoints (where the Sidebar takes
+              over). Rendered HERE rather than inside Sidebar so they
+              don't end up as flex children alongside page content. */}
+          <MobileTopBar />
+          {children}
+          <MobileBottomNav />
+        </UserProvider>
       </body>
     </html>
   );
