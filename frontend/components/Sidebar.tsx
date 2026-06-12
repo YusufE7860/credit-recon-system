@@ -7,6 +7,8 @@ import Image from 'next/image';
 import { logoutUser } from '@/lib/auth';
 import { useCurrentUser, type Role } from '@/lib/user-context';
 import NotificationBell from './NotificationBell';
+import MobileTopBar from './MobileTopBar';
+import MobileBottomNav from './MobileBottomNav';
 
 // Each nav item declares which roles are allowed to see it.
 interface NavItem {
@@ -74,43 +76,18 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile-only floating controls — hamburger on the left, bell on
-          the right. Both fixed to the viewport with high z-index so they
-          sit above page content. Hidden on desktop where the sidebar is
-          always visible. */}
-      <div className="md:hidden fixed top-3 left-3 z-30">
-        <button
-          onClick={() => setMobileOpen(true)}
-          className="bg-black text-white p-2.5 rounded-lg shadow-lg active:opacity-80"
-          aria-label="Open menu"
-        >
-          <HamburgerIcon />
-        </button>
-      </div>
-      <div className="md:hidden fixed top-3 right-3 z-30">
-        <div className="bg-black text-white rounded-lg shadow-lg p-1">
-          <NotificationBell />
-        </div>
-      </div>
+      {/* Mobile gets a solid top bar (logo + profile chip) and a
+          three-tab bottom navigation with a raised central Upload
+          button. The previous hamburger drawer is gone — everything
+          not on the bottom bar lives in the profile chip dropdown. */}
+      <MobileTopBar />
+      <MobileBottomNav />
 
-      {/* Backdrop — only when drawer is open on mobile */}
-      {mobileOpen && (
-        <div
-          onClick={() => setMobileOpen(false)}
-          className="md:hidden fixed inset-0 bg-black/60 z-40"
-          aria-hidden="true"
-        />
-      )}
-
+      {/* Desktop sidebar — unchanged from the previous version.
+          md:flex makes it visible at and above the md breakpoint;
+          on mobile it's hidden entirely now. */}
       <aside
-        className={[
-          'w-64 bg-black text-white p-6 flex flex-col',
-          // Mobile: full-height fixed drawer that slides in from the left.
-          'fixed inset-y-0 left-0 z-50 h-screen transform transition-transform duration-200 ease-out',
-          mobileOpen ? 'translate-x-0' : '-translate-x-full',
-          // Desktop: revert to sticky in-flow sidebar.
-          'md:translate-x-0 md:sticky md:top-0 md:z-auto md:h-screen',
-        ].join(' ')}
+        className="hidden md:flex w-64 bg-black text-white p-6 flex-col md:sticky md:top-0 md:z-auto md:h-screen"
       >
         <div className="mb-10 flex-shrink-0">
           <div className="flex justify-between items-start">
@@ -127,24 +104,12 @@ export default function Sidebar() {
                 FFG Recon System
               </p>
             </Link>
-            {/* Bell visible on desktop (inside the sidebar header);
-                on mobile it's in the fixed top-right corner instead. */}
-            <div className="hidden md:block">
+            <div>
               <NotificationBell />
             </div>
-            {/* Close button visible on mobile only */}
-            <button
-              onClick={() => setMobileOpen(false)}
-              className="md:hidden text-white/70 hover:text-white p-2 -mt-1 -mr-1"
-              aria-label="Close menu"
-            >
-              <CloseIcon />
-            </button>
           </div>
         </div>
 
-        {/* overflow-y-auto so a future longer nav scrolls inside the nav
-            region instead of pushing the logout button off-screen. */}
         <nav className="space-y-1 flex-1 overflow-y-auto -mr-2 pr-2">
           {visibleItems.map((item) => {
             const isActive = pathname.startsWith(item.href);
@@ -164,7 +129,6 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* Tiny "Logged in as" footer so users can sanity-check their role */}
         {user && (
           <div className="mb-3 pt-3 border-t border-white/10 flex-shrink-0">
             <p className="text-xs text-gray-400 truncate">{user.name}</p>

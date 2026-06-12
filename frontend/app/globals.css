@@ -23,3 +23,14 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
+
+/* The mobile bottom tab bar is position:fixed at the viewport bottom
+   and ~75 px tall (including the iOS safe-area inset). Without this
+   padding, the last bit of every page sits beneath it and can't be
+   reached by scrolling. Desktop (md+) hides the bottom nav, so no
+   padding is needed there. */
+@media (max-width: 767px) {
+  body {
+    padding-bottom: calc(75px + env(safe-area-inset-bottom));
+  }
+}
