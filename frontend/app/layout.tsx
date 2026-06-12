@@ -62,7 +62,14 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      {/* Block-layout body. `flex flex-col` was confusing some mobile
+          browsers (notably iOS Safari) into treating position:fixed
+          children as flex items, which made the bottom nav scroll with
+          page content instead of staying pinned to the viewport. Plain
+          block layout keeps things straightforward: top bar sticks to
+          the top of the scrolling area, content fills below, bottom
+          nav is truly fixed to the viewport. */}
+      <body className="min-h-full">
         <UserProvider>
           {/* Mobile-only chrome. Both components self-hide on auth
               screens and on md+ breakpoints (where the Sidebar takes
