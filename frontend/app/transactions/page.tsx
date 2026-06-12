@@ -62,6 +62,11 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [filterUserId, setFilterUserId] = useState<string>('');
+  // Match-status filter — visible to all users. 'all' is the default;
+  // 'matched' / 'unmatched' narrow the view. Bank-fee rows (which
+  // never need an invoice) are always excluded from the "unmatched"
+  // bucket so they don't surface as "needs attention".
+  const [matchFilter, setMatchFilter] = useState<'all' | 'matched' | 'unmatched'>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -158,6 +163,23 @@ export default function TransactionsPage() {
     if (privileged) fetchUsersForFilter();
   }, [privileged]);
 
+  // Apply the match-status filter client-side. Bank-fee rows always
+  // count as "matched" semantically (no receipt needed) — they get
+  // bucketed with matched so the unmatched view stays a clean "needs
+  // attention" list. Match counts use the SAME definition so the pills'
+  // numbers always agree with what you see when you click them.
+  const matchedCount = transactions.filter(
+    (t) => t.matched || t.noMatchRequired,
+  ).length;
+  const unmatchedCount = transactions.filter(
+    (t) => !t.matched && !t.noMatchRequired,
+  ).length;
+  const visibleTransactions = transactions.filter((t) => {
+    if (matchFilter === 'matched') return t.matched || t.noMatchRequired;
+    if (matchFilter === 'unmatched') return !t.matched && !t.noMatchRequired;
+    return true;
+  });
+
   return (
     <main className="flex min-h-screen bg-gray-100">
       <Sidebar />
@@ -169,12 +191,58 @@ export default function TransactionsPage() {
             <p className="text-gray-600 mt-1">
               {loading
                 ? 'Loading...'
-                : `${transactions.length} transaction${transactions.length === 1 ? '' : 's'}`}
+                : `${visibleTransactions.length} of ${transactions.length} transaction${transactions.length === 1 ? '' : 's'}`}
+              {matchFilter !== 'all' && ` · ${matchFilter}`}
               {filterUserId &&
                 users.length > 0 &&
                 ` · filtered to ${users.find((u) => u.id === filterUserId)?.name ?? 'user'}`}
             </p>
           </div>
+        </div>
+
+        {/* Match-status pills — visible to every role. Each pill shows
+            its own count so the user knows what to expect before
+            clicking. "All" doesn't show a count (just the everything-
+            else view). Active state inverts colours. */}
+        <div className="bg-white rounded-xl shadow p-3 mb-4 flex flex-wrap gap-2 items-center">
+          <span className="text-xs uppercase tracking-wider text-gray-500 font-medium mr-1">
+            Status
+          </span>
+          {(
+            [
+              { key: 'all', label: 'All', count: transactions.length },
+              { key: 'matched', label: 'Matched', count: matchedCount },
+              { key: 'unmatched', label: 'Unmatched', count: unmatchedCount },
+            ] as const
+          ).map((p) => {
+            const active = matchFilter === p.key;
+            const accent =
+              p.key === 'unmatched'
+                ? active
+                  ? 'bg-red-600 text-white'
+                  : 'bg-red-50 text-red-700 hover:bg-red-100'
+                : p.key === 'matched'
+                ? active
+                  ? 'bg-green-600 text-white'
+                  : 'bg-green-50 text-green-700 hover:bg-green-100'
+                : active
+                ? 'bg-black text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200';
+            return (
+              <button
+                key={p.key}
+                onClick={() => setMatchFilter(p.key)}
+                className={`px-3 py-1.5 rounded-full text-sm font-medium transition ${accent}`}
+              >
+                {p.label}
+                {p.key !== 'all' && (
+                  <span className="ml-1.5 text-xs opacity-80">
+                    {p.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* Admin-only filter bar */}
@@ -231,7 +299,7 @@ export default function TransactionsPage() {
             </thead>
 
             <tbody>
-              {transactions.length === 0 && !loading ? (
+              {visibleTransactions.length === 0 && !loading ? (
                 <tr>
                   <td
                     colSpan={
@@ -239,11 +307,13 @@ export default function TransactionsPage() {
                     }
                     className="p-8 text-center text-gray-400"
                   >
-                    No transactions to show.
+                    {matchFilter === 'all'
+                      ? 'No transactions to show.'
+                      : `No ${matchFilter} transactions in this view.`}
                   </td>
                 </tr>
               ) : (
-                transactions.map((t) => {
+                visibleTransactions.map((t) => {
                   // Diff in rand and percent between what the statement
                   // says vs the matched invoice's totalZAR. We tolerate
                   // small (< R5 OR < 1%) gaps silently — those are
@@ -375,12 +445,14 @@ export default function TransactionsPage() {
             horizontal scrolling required. Hidden at md+ where the
             real table takes over. */}
         <div className="md:hidden space-y-3">
-          {transactions.length === 0 && !loading ? (
+          {visibleTransactions.length === 0 && !loading ? (
             <div className="bg-white rounded-xl shadow p-8 text-center text-gray-400 text-sm">
-              No transactions to show.
+              {matchFilter === 'all'
+                ? 'No transactions to show.'
+                : `No ${matchFilter} transactions in this view.`}
             </div>
           ) : (
-            transactions.map((t) => {
+            visibleTransactions.map((t) => {
               const invoiceZAR =
                 t.invoices.length > 0
                   ? t.invoices.reduce((sum, inv) => {
