@@ -103,21 +103,49 @@ function writePivotInSideColumns(
   sheet.getColumn(COL_PIVOT_AMOUNT).width = 16;
 
   // ---- Aggregate ----
+  // When a parent row has sub-rows (splits or multiple attached
+  // invoices), the parent's account/department fields read
+  // "Multiple — see breakdown" — a UI hint, NOT a real category. We
+  // must aggregate from the SUB-ROWS' actual accounts/departments
+  // instead, otherwise the pivot ends up with a phantom
+  // "Multiple — see breakdown" bucket holding the parent's total.
+  //
+  // For sub-rows we use their own amounts. For parent rows WITHOUT
+  // sub-rows (the common single-invoice case) we use the parent's
+  // amount directly. Negative sub-rows (refund credits) are skipped
+  // from the pivot just like negative parent rows always have been.
   const byAccount = new Map<string, { total: number; byDept: Map<string, number> }>();
   let grandTotal = 0;
+
+  function addToBucket(account: string | null, department: string | null, amount: number) {
+    if (amount <= 0) return; // pivot is spend-only; credits don't appear
+    const acct = account ?? 'Unclassified';
+    const dept = department ?? '(no department)';
+    const existing = byAccount.get(acct) ?? {
+      total: 0,
+      byDept: new Map<string, number>(),
+    };
+    existing.total += amount;
+    existing.byDept.set(dept, (existing.byDept.get(dept) ?? 0) + amount);
+    byAccount.set(acct, existing);
+    grandTotal += amount;
+  }
+
   for (const section of snapshot.cards) {
     for (const r of section.rows) {
-      if (r.amount <= 0) continue; // skip credits
-      const acct = r.account ?? 'Unclassified';
-      const dept = r.department ?? '(no department)';
-      const existing = byAccount.get(acct) ?? {
-        total: 0,
-        byDept: new Map<string, number>(),
-      };
-      existing.total += r.amount;
-      existing.byDept.set(dept, (existing.byDept.get(dept) ?? 0) + r.amount);
-      byAccount.set(acct, existing);
-      grandTotal += r.amount;
+      if (r.subRows && r.subRows.length > 0) {
+        // Drill into the breakdown — the parent row's labels are a UI
+        // hint ("Multiple — see breakdown") and would corrupt the pivot.
+        // Skip rows flagged as headers (an "Invoice N" row whose own
+        // splits follow below) so we don't double-count.
+        for (const sub of r.subRows) {
+          if (sub.isHeader) continue;
+          if (sub.amount == null) continue;
+          addToBucket(sub.account, sub.department, sub.amount);
+        }
+      } else {
+        addToBucket(r.account, r.department, r.amount);
+      }
     }
   }
 
@@ -470,23 +498,39 @@ export async function generateCombinedReconXlsx(
     { total: number; byDept: Map<string, number> }
   >();
   let grandTotal = 0;
+  // Helper — same model as the per-user pivot: drill into sub-rows when
+  // present so the parent's "Multiple — see breakdown" UI label doesn't
+  // pollute the aggregation as a phantom category.
+  const addToBucket = (
+    account: string | null,
+    department: string | null,
+    amount: number,
+  ) => {
+    if (amount <= 0) return;
+    const acct = account ?? 'Unclassified';
+    const dept = department ?? '(no department)';
+    const existing = byAccount.get(acct) ?? {
+      total: 0,
+      byDept: new Map<string, number>(),
+    };
+    existing.total += amount;
+    existing.byDept.set(dept, (existing.byDept.get(dept) ?? 0) + amount);
+    byAccount.set(acct, existing);
+    grandTotal += amount;
+  };
+
   for (const snap of snapshots) {
     for (const card of snap.cards) {
       for (const r of card.rows) {
-        if (r.amount <= 0) continue; // skip credits
-        const acct = r.account ?? 'Unclassified';
-        const dept = r.department ?? '(no department)';
-        const existing = byAccount.get(acct) ?? {
-          total: 0,
-          byDept: new Map<string, number>(),
-        };
-        existing.total += r.amount;
-        existing.byDept.set(
-          dept,
-          (existing.byDept.get(dept) ?? 0) + r.amount,
-        );
-        byAccount.set(acct, existing);
-        grandTotal += r.amount;
+        if (r.subRows && r.subRows.length > 0) {
+          for (const sub of r.subRows) {
+            if (sub.isHeader) continue; // skip grouping headers
+            if (sub.amount == null) continue;
+            addToBucket(sub.account, sub.department, sub.amount);
+          }
+        } else {
+          addToBucket(r.account, r.department, r.amount);
+        }
       }
     }
   }

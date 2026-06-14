@@ -54,6 +54,11 @@ export interface SnapshotSubRow {
   department: string | null; // store
   amount: number | null;
   notes: string | null;
+  // True when this row is a grouping header (an "Invoice N" parent
+  // whose own splits follow below). The XLSX renderer still draws it
+  // visually, but the pivot table SKIPS it to avoid double-counting
+  // with the splits beneath it.
+  isHeader?: boolean;
 }
 
 // Per-card section within a snapshot.
@@ -474,6 +479,7 @@ export class ReconReportsService {
           for (let i = 0; i < t.invoices.length; i++) {
             const inv = t.invoices[i];
             const isRefund = inv.kind === 'REFUND';
+            const invHasSplits = !!(inv.splits && inv.splits.length > 0);
             subRows.push({
               label: `Invoice ${i + 1}${isRefund ? ' (refund)' : ''}: ${inv.supplier}`,
               account: inv.category,
@@ -482,9 +488,14 @@ export class ReconReportsService {
               // transaction net.
               amount: isRefund ? -inv.total : inv.total,
               notes: inv.notes,
+              // When this invoice has its own splits below, mark the
+              // "Invoice N" row as a header so the pivot skips it and
+              // counts only the leaf split rows (otherwise the same
+              // money would be aggregated twice).
+              isHeader: invHasSplits,
             });
-            if (inv.splits && inv.splits.length > 0) {
-              for (const s of inv.splits) {
+            if (invHasSplits) {
+              for (const s of inv.splits!) {
                 subRows.push({
                   label: `  · ${inv.supplier} / ${s.category}`,
                   account: s.category,
