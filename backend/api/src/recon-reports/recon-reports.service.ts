@@ -2,6 +2,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
@@ -271,6 +272,29 @@ export class ReconReportsService {
     return report;
   }
 
+  // Delete a recon report (snapshot). REPORTING and ADMIN only — the
+  // snapshot is an admin artefact, USERs don't get to remove them.
+  // Snapshots are pure read models (no FKs depend on them), so this is
+  // a simple row delete; the underlying transactions/invoices are
+  // untouched and can be re-snapshotted any time.
+  async delete(id: string, currentUser: JwtUser) {
+    if (!isPrivileged(currentUser.role)) {
+      throw new ForbiddenException('Only ADMIN / REPORTING can delete recon reports.');
+    }
+    // 404-guard so we don't surface Prisma's raw error if the id is bogus.
+    const report = await this.prisma.reconReport.findUnique({
+      where: { id },
+      select: { id: true, name: true },
+    });
+    if (!report) throw new NotFoundException(`Report ${id} not found`);
+
+    await this.prisma.reconReport.delete({ where: { id } });
+    this.logger.log(
+      `ReconReport deleted: ${report.id} (${report.name}) by ${currentUser.email}`,
+    );
+    return { success: true, id };
+  }
+
   // Admin-only: build (and persist) snapshots for a given period or
   // statement, then hand the in-memory SnapshotData[] back to the
   // controller so it can stream a single XLSX (combined or per-user).
@@ -430,6 +454,7 @@ export class ReconReportsService {
         // sub-rows array surfaces the rest: other attached invoices
         // (split-receipt) AND any line splits on the primary invoice.
         const primary = t.invoices[0] ?? null;
+        const multipleInvoices = t.invoices.length > 1;
         const extraCount = Math.max(0, t.invoices.length - 1);
         const supplierLabel = primary
           ? extraCount > 0
@@ -440,9 +465,41 @@ export class ReconReportsService {
         // Build sub-rows.
         const subRows: SnapshotSubRow[] = [];
 
-        // (1) Splits on the PRIMARY invoice. Renders each split line so
-        // the accountant sees the per-store / per-category breakdown.
-        if (primary?.splits && primary.splits.length > 0) {
+        if (multipleInvoices) {
+          // Multi-invoice case: render EVERY attached invoice as its
+          // own sub-row, starting at Invoice 1. Without this the first
+          // invoice's details only live on the parent row, which the
+          // accountant has to mentally combine with the breakdown
+          // below — confusing when supplier+category differ per row.
+          for (let i = 0; i < t.invoices.length; i++) {
+            const inv = t.invoices[i];
+            const isRefund = inv.kind === 'REFUND';
+            subRows.push({
+              label: `Invoice ${i + 1}${isRefund ? ' (refund)' : ''}: ${inv.supplier}`,
+              account: inv.category,
+              department: inv.storeAllocation,
+              // Refund amounts shown negative so the column sums to the
+              // transaction net.
+              amount: isRefund ? -inv.total : inv.total,
+              notes: inv.notes,
+            });
+            if (inv.splits && inv.splits.length > 0) {
+              for (const s of inv.splits) {
+                subRows.push({
+                  label: `  · ${inv.supplier} / ${s.category}`,
+                  account: s.category,
+                  department: s.store,
+                  amount: isRefund ? -s.amount : s.amount,
+                  notes: null,
+                });
+              }
+            }
+          }
+        } else if (primary?.splits && primary.splits.length > 0) {
+          // Single-invoice case with line splits. Renders each split
+          // line so the accountant sees the per-store / per-category
+          // breakdown. The parent row carries the invoice's headline
+          // total and supplier as usual.
           for (const s of primary.splits) {
             subRows.push({
               label: `Split: ${s.category}`,
@@ -451,35 +508,6 @@ export class ReconReportsService {
               amount: s.amount,
               notes: null,
             });
-          }
-        }
-
-        // (2) Additional invoices (split-receipt case). Each gets its
-        // own sub-row with its supplier + total + category. If THAT
-        // invoice itself has splits, we render its splits one level
-        // deeper (still as sub-rows, prefixed with the supplier).
-        for (let i = 1; i < t.invoices.length; i++) {
-          const inv = t.invoices[i];
-          const isRefund = inv.kind === 'REFUND';
-          subRows.push({
-            label: `Invoice ${i + 1}${isRefund ? ' (refund)' : ''}: ${inv.supplier}`,
-            account: inv.category,
-            department: inv.storeAllocation,
-            // Refund amounts shown negative so the column sums to the
-            // transaction net.
-            amount: isRefund ? -inv.total : inv.total,
-            notes: inv.notes,
-          });
-          if (inv.splits && inv.splits.length > 0) {
-            for (const s of inv.splits) {
-              subRows.push({
-                label: `  · ${inv.supplier} / ${s.category}`,
-                account: s.category,
-                department: s.store,
-                amount: isRefund ? -s.amount : s.amount,
-                notes: null,
-              });
-            }
           }
         }
 

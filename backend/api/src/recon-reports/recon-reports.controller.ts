@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Param,
   Body,
   Res,
@@ -52,6 +53,16 @@ export class ReconReportsController {
   @Get(':id')
   get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.reconReportsService.getById(id, user);
+  }
+
+  // DELETE /recon-reports/:id — REPORTING/ADMIN only. Removes the
+  // snapshot row; underlying transactions and invoices are untouched
+  // (snapshots are pure read models, no FKs depend on them).
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.REPORTING)
+  remove(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.reconReportsService.delete(id, user);
   }
 
   // GET /recon-reports/:id/download — XLSX file stream.

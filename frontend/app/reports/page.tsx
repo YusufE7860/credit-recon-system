@@ -424,6 +424,28 @@ export default function ReportsPage() {
     }
   }
 
+  // Delete a saved recon report. Confirmation gate to avoid an
+  // accidental click destroying a snapshot the admin may have shared.
+  // After success we drop the row from local state — no full re-fetch
+  // needed since the underlying list hasn't otherwise changed.
+  async function deleteReconReport(report: ReconReportRow) {
+    if (
+      !confirm(
+        `Delete "${report.name}"?\n\nThe underlying transactions and invoices are NOT affected — they stay in the system. Only this saved snapshot is removed.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api(`/recon-reports/${report.id}`, { method: 'DELETE' });
+      setReconReports((rs) => rs.filter((r) => r.id !== report.id));
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to delete recon report',
+      );
+    }
+  }
+
   function applyPreset(getRange: () => [string, string]) {
     const [f, t] = getRange();
     setFrom(f);
@@ -683,6 +705,7 @@ export default function ReportsPage() {
               rows={reconReports}
               loading={reconReportsLoading}
               onDownload={downloadReconReport}
+              onDelete={isAdminLike ? deleteReconReport : undefined}
             />
           </>
         )}
@@ -899,11 +922,14 @@ function AdminReconGenerator(props: {
 // ---------- Recon reports tab ----------
 
 function ReconReportsView({
-  rows, loading, onDownload,
+  rows, loading, onDownload, onDelete,
 }: {
   rows: ReconReportRow[];
   loading: boolean;
   onDownload: (r: ReconReportRow, variant: 'monthly' | 'pivot') => void;
+  // Optional — only passed when the current user is REPORTING/ADMIN.
+  // Plain USERs see the download buttons but no delete affordance.
+  onDelete?: (r: ReconReportRow) => void;
 }) {
   if (loading) {
     return <p className="text-sm text-gray-600">Loading recon reports...</p>;
@@ -982,6 +1008,16 @@ function ReconReportsView({
                   >
                     Pivot
                   </button>
+                  {onDelete && (
+                    <button
+                      onClick={() => onDelete(r)}
+                      className="text-xs text-red-600 hover:bg-red-50 px-2 py-1.5 rounded ml-2"
+                      title="Delete this snapshot (underlying data is untouched)"
+                      aria-label={`Delete recon report ${r.name}`}
+                    >
+                      Delete
+                    </button>
+                  )}
                 </td>
               </tr>
             );

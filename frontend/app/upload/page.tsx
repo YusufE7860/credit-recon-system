@@ -268,6 +268,41 @@ export default function UploadPage() {
       return;
     }
 
+    // Category + Store are mandatory so the recon report has somewhere
+    // to assign each transaction. A blank category lands the invoice in
+    // "Uncategorized" on the dashboard and as "—" on the XLSX, which
+    // forces the accountant to fix it row by row.
+    //
+    // Two ways to satisfy the requirement:
+    //   - Set BOTH the per-item Category and Store (or rely on batch
+    //     defaults), OR
+    //   - Add splits — each split provides its own category + store.
+    const pending = queue.filter((i) => i.status !== 'success');
+    for (const item of pending) {
+      const hasSplits = item.splits.length > 0;
+      if (hasSplits) {
+        // Splits must be fully filled in (category required per split).
+        const bad = item.splits.find(
+          (s) => !s.category.trim() || !s.store.trim(),
+        );
+        if (bad) {
+          setError(
+            `Every split line on "${item.file.name}" needs both a Category and a Store.`,
+          );
+          return;
+        }
+        continue;
+      }
+      const effectiveCategory = (item.category || batchCategory).trim();
+      const effectiveStore = (item.storeAllocation || batchStore).trim();
+      if (!effectiveCategory || !effectiveStore) {
+        setError(
+          `"${item.file.name}" needs a Category and a Store. Pick a default at the top, set them per-item, or split into lines.`,
+        );
+        return;
+      }
+    }
+
     setBusy(true);
     setError('');
     setSuccessMsg('');
@@ -484,10 +519,15 @@ export default function UploadPage() {
               <p className="text-[11px] text-gray-500 uppercase tracking-wider">
                 Defaults for new files — override per invoice in the queue below
               </p>
+              <p className="text-xs text-gray-600">
+                <span className="text-red-600 font-medium">Required</span>{' '}
+                — every invoice needs a category and store before upload
+                (set defaults here, or per-item, or via line splits).
+              </p>
               {/* Category */}
               <div>
                 <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
-                  Default category
+                  Default category <span className="text-red-600">*</span>
                 </label>
                 <SearchableSelect
                   value={batchCategory}
@@ -513,7 +553,7 @@ export default function UploadPage() {
               {requiresStore && (
                 <div>
                   <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
-                    Default store / department
+                    Default store / department <span className="text-red-600">*</span>
                   </label>
                   <SearchableSelect
                     value={batchStore}
