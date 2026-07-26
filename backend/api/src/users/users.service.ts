@@ -16,6 +16,10 @@ const PUBLIC_USER_SELECT = {
   role: true,
   active: true,
   managedUserIds: true,
+  // Exposed so the frontend knows to force-redirect the user to the
+  // change-password page immediately after login. Cleared once they
+  // successfully change it themselves.
+  mustResetPassword: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -84,6 +88,10 @@ export class UsersService {
         email,
         password: hashed,
         role: finalRole,
+        // Force the user to change their password on next login — the
+        // one the admin set is a temporary hand-over credential, not
+        // something the user should keep using.
+        mustResetPassword: true,
         // Only stored when role is UPLOADER — silently dropped otherwise
         // so a misconfigured create can't grant phantom access.
         managedUserIds:
@@ -181,7 +189,64 @@ export class UsersService {
     const hashed = await bcrypt.hash(newPassword, 10);
     return this.prisma.user.update({
       where: { id },
-      data: { password: hashed },
+      data: {
+        password: hashed,
+        // Admin-issued password is temporary — flag so the user is
+        // routed to /change-password on next login.
+        mustResetPassword: true,
+      },
+      select: PUBLIC_USER_SELECT,
+    });
+  }
+
+  // Self-serve password change. Two allowed paths:
+  //   1. currentPassword is supplied and matches → normal change flow
+  //   2. mustResetPassword is true on the user  → skip currentPassword
+  //      check (they just logged in with an admin-issued temp password
+  //      and are being forced to pick a new one).
+  // Sets mustResetPassword=false on success either way.
+  async changeOwnPassword(
+    userId: string,
+    input: { currentPassword?: string; newPassword: string },
+  ) {
+    if (!input.newPassword || input.newPassword.length < 8) {
+      throw new BadRequestException(
+        'New password must be at least 8 characters',
+      );
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+
+    // Skip the current-password check only when the user is under the
+    // forced-reset flag. Regular voluntary changes still need proof.
+    if (!user.mustResetPassword) {
+      if (!input.currentPassword) {
+        throw new BadRequestException(
+          'Current password is required to change password.',
+        );
+      }
+      const ok = await bcrypt.compare(input.currentPassword, user.password);
+      if (!ok) {
+        throw new BadRequestException('Current password is incorrect.');
+      }
+    }
+
+    // Don't allow re-using the same password — the whole point of the
+    // reset flow is to move the user OFF the temp credential.
+    const isSame = await bcrypt.compare(input.newPassword, user.password);
+    if (isSame) {
+      throw new BadRequestException(
+        'New password must be different from the current password.',
+      );
+    }
+
+    const hashed = await bcrypt.hash(input.newPassword, 10);
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        password: hashed,
+        mustResetPassword: false,
+      },
       select: PUBLIC_USER_SELECT,
     });
   }

@@ -66,11 +66,13 @@ export default function MobileTopBar() {
   }, [menuOpen]);
 
   // Hide on auth screens — they're full-bleed and shouldn't show the
-  // app chrome at all.
+  // app chrome at all. /change-password is included because a user
+  // under a forced-reset shouldn't be tempted to navigate away.
   if (
     pathname.startsWith('/login') ||
     pathname.startsWith('/forgot-password') ||
-    pathname.startsWith('/reset-password')
+    pathname.startsWith('/reset-password') ||
+    pathname.startsWith('/change-password')
   ) {
     return null;
   }

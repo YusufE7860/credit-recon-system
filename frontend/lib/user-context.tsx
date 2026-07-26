@@ -7,7 +7,7 @@ import {
   useState,
   ReactNode,
 } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { api, ApiError } from './api';
 
 export type Role = 'USER' | 'UPLOADER' | 'REPORTING' | 'ADMIN';
@@ -21,6 +21,11 @@ export interface CurrentUser {
   // Only populated for UPLOADER role: the USER ids this assistant is
   // allowed to upload invoices on behalf of. Empty for every other role.
   managedUserIds: string[];
+  // True when the user is under a force-reset (admin created their
+  // account or reset their password). The UserProvider hard-redirects
+  // to /change-password when this is set; the flag flips false once
+  // they've chosen a new password.
+  mustResetPassword?: boolean;
 }
 
 interface UserContextValue {
@@ -49,6 +54,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
   const pathname = usePathname();
+  const router = useRouter();
 
   async function fetchMe() {
     setLoading(true);
@@ -89,6 +95,18 @@ export function UserProvider({ children }: { children: ReactNode }) {
     fetchMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
+
+  // Force-reset guard. When a user is flagged mustResetPassword=true
+  // (admin created them or reset their password), lock them onto the
+  // change-password page until they pick a new one. Once the backend
+  // clears the flag, /auth/me on next tick returns false and the user
+  // is free to navigate.
+  useEffect(() => {
+    if (!user) return;
+    if (!user.mustResetPassword) return;
+    if (pathname === '/change-password') return;
+    router.replace('/change-password');
+  }, [user, pathname, router]);
 
   // Heartbeat: keep the cookie's sliding window alive while the tab is
   // visible. Stops when the tab is hidden (no point burning battery for

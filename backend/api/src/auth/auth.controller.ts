@@ -110,4 +110,25 @@ export class AuthController {
     }
     return this.authService.resetPassword(body.token, body.newPassword);
   }
+
+  // Self-serve password change. Called from the /change-password page.
+  // Body: { currentPassword?, newPassword }
+  //   currentPassword is REQUIRED unless the user has mustResetPassword=true
+  //   (they were force-routed here by an admin-issued temp password).
+  // Throttled to 10/minute to prevent brute-force on currentPassword.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @CurrentUser() user: JwtUser,
+    @Body() body: { currentPassword?: string; newPassword?: string } = {},
+  ) {
+    if (!body?.newPassword) {
+      throw new BadRequestException('newPassword is required');
+    }
+    return this.usersService.changeOwnPassword(user.sub, {
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+    });
+  }
 }

@@ -37,11 +37,13 @@ export default function MobileBottomNav() {
   const pathname = usePathname();
   const { user } = useCurrentUser();
   // Hide the bar on login/forgot-password screens — they shouldn't
-  // appear over an unauthenticated page.
+  // appear over an unauthenticated page. /change-password is included
+  // because the user is being forced to complete that step first.
   if (
     pathname.startsWith('/login') ||
     pathname.startsWith('/forgot-password') ||
-    pathname.startsWith('/reset-password')
+    pathname.startsWith('/reset-password') ||
+    pathname.startsWith('/change-password')
   ) {
     return null;
   }

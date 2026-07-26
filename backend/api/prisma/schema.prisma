@@ -68,6 +68,11 @@ model User {
   // Soft delete: inactive users can't log in but their data is preserved
   // for audit. Admin can reactivate via the users admin page.
   active    Boolean  @default(true)
+  // Forces the user to change their password on next login. Set true
+  // when an admin creates the user (they were given a temporary password)
+  // OR when an admin resets a user's password. Cleared to false when the
+  // user successfully changes their own password.
+  mustResetPassword Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
