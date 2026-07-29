@@ -134,8 +134,9 @@ export default function UploadPage() {
   // a batch mostly shares a category but has one or two odd files).
   // Currency is dropped entirely — AI OCR auto-detects and the user
   // can correct on the invoice detail page if it picks the wrong one.
-  const [batchCategory, setBatchCategory] = useState<string>('');
-  const [batchStore, setBatchStore] = useState<string>('');
+  // Batch category/store defaults are also gone — users fill category
+  // and store per-item on each queued file instead (less confusing and
+  // easier on mobile than a two-step defaults + per-item flow).
 
   // Every transaction in the master sheet has a department, regardless
   // of category. Keeping the dropdown always visible matches that flow.
@@ -200,8 +201,8 @@ export default function UploadPage() {
           previewUrl: URL.createObjectURL(f),
           status: 'pending',
           reason: '',
-          category: batchCategory,
-          storeAllocation: batchStore,
+          category: '',
+          storeAllocation: '',
           splits: [], // empty by default; user can open the split editor
         });
       } catch (err) {
@@ -214,8 +215,8 @@ export default function UploadPage() {
           previewUrl: '',
           status: 'pending',
           reason: '',
-          category: batchCategory,
-          storeAllocation: batchStore,
+          category: '',
+          storeAllocation: '',
           splits: [],
         });
       }
@@ -293,11 +294,11 @@ export default function UploadPage() {
         }
         continue;
       }
-      const effectiveCategory = (item.category || batchCategory).trim();
-      const effectiveStore = (item.storeAllocation || batchStore).trim();
+      const effectiveCategory = item.category.trim();
+      const effectiveStore = item.storeAllocation.trim();
       if (!effectiveCategory || !effectiveStore) {
         setError(
-          `"${item.file.name}" needs a Category and a Store. Pick a default at the top, set them per-item, or split into lines.`,
+          `"${item.file.name}" needs a Category and a Store. Set them on the queued file, or split it into lines.`,
         );
         return;
       }
@@ -334,8 +335,8 @@ export default function UploadPage() {
         // (initialised from the batch default) so the user can override
         // a single odd file without touching the rest of the queue.
         // Empty string means "leave blank / let OCR auto-fill".
-        const effectiveCategory = item.category || batchCategory;
-        const effectiveStore = item.storeAllocation || batchStore;
+        const effectiveCategory = item.category;
+        const effectiveStore = item.storeAllocation;
         if (effectiveCategory) fd.append('category', effectiveCategory);
         if (requiresStore && effectiveStore) {
           fd.append('storeAllocation', effectiveStore);
@@ -511,73 +512,11 @@ export default function UploadPage() {
               </div>
             )}
 
-            {/* Batch defaults — applied to NEW files added to the
-                queue. Each queued file gets its own category/store
-                inputs below that can override these. Changing these
-                values doesn't retroactively rewrite earlier files. */}
-            <div className="bg-white rounded-xl shadow p-4 mb-4 space-y-3">
-              <p className="text-[11px] text-gray-500 uppercase tracking-wider">
-                Defaults for new files — override per invoice in the queue below
-              </p>
-              <p className="text-xs text-gray-600">
-                <span className="text-red-600 font-medium">Required</span>{' '}
-                — every invoice needs a category and store before upload
-                (set defaults here, or per-item, or via line splits).
-              </p>
-              {/* Category */}
-              <div>
-                <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
-                  Default category <span className="text-red-600">*</span>
-                </label>
-                <SearchableSelect
-                  value={batchCategory}
-                  onChange={setBatchCategory}
-                  options={categories.map((c) => ({
-                    value: c.name,
-                    label: c.name,
-                  }))}
-                  placeholder="— Select category —"
-                  allowClear
-                />
-
-                {categories.length === 0 && (
-                  <p className="text-xs text-orange-600 mt-1">
-                    No active categories yet. An admin can add them under Admin → Categories.
-                  </p>
-                )}
-              </div>
-
-              {/* Store / Department — which cost centre this charge
-                  is allocated to. Always visible because every transaction
-                  needs an owning department per the master sheet. */}
-              {requiresStore && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 uppercase tracking-wider mb-2">
-                    Default store / department <span className="text-red-600">*</span>
-                  </label>
-                  <SearchableSelect
-                    value={batchStore}
-                    onChange={setBatchStore}
-                    options={stores.map((s) => ({
-                      value: s.name,
-                      label: s.name,
-                    }))}
-                    placeholder="— Select store —"
-                    allowClear
-                  />
-
-                  {stores.length === 0 && (
-                    <p className="text-xs text-orange-600 mt-1">
-                      No active stores yet. An admin can add them under Admin → Stores.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Currency dropdown removed — AI OCR auto-detects the
-                  currency from the invoice. If it picks the wrong one,
-                  the user can override on the invoice detail page. */}
-            </div>
+            {/* Batch defaults removed — users found them redundant with
+                the per-item category/store dropdowns that show up on
+                each queued file after selection. Category + store are
+                still required per invoice; the pre-upload validation
+                checks item.category and item.storeAllocation directly. */}
 
             <div className="bg-white rounded-xl shadow p-6 mb-6">
               <div className="grid grid-cols-2 gap-3">
@@ -754,11 +693,7 @@ export default function UploadPage() {
                                 value: c.name,
                                 label: c.name,
                               }))}
-                              placeholder={
-                                batchCategory
-                                  ? `Category: ${batchCategory} (default)`
-                                  : '— Category —'
-                              }
+                              placeholder="Category *"
                               disabled={item.status === 'uploading' || busy}
                               size="sm"
                               allowClear
@@ -778,11 +713,7 @@ export default function UploadPage() {
                                 value: s.name,
                                 label: s.name,
                               }))}
-                              placeholder={
-                                batchStore
-                                  ? `Store: ${batchStore} (default)`
-                                  : '— Store —'
-                              }
+                              placeholder="Store *"
                               disabled={item.status === 'uploading' || busy}
                               size="sm"
                               allowClear
