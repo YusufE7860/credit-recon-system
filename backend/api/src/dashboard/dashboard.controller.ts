@@ -10,16 +10,18 @@ import type { JwtUser } from '../auth/role.enum';
 export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
 
-  // GET /dashboard/summary?from=YYYY-MM-DD&to=YYYY-MM-DD
-  // Both query params are optional. If omitted the service defaults to
-  // the current calendar month (1st → today) so a fresh page-load shows
-  // the user's "this month" view by default.
+  // GET /dashboard/summary?from=YYYY-MM-DD&to=YYYY-MM-DD&userId=<uuid>
+  // - from/to: optional period bounds. If omitted the service defaults
+  //   to the current calendar month.
+  // - userId: admin/reporting only — narrow the whole dashboard to a
+  //   single user's spend. Silently ignored for non-privileged callers.
   @Get('summary')
   summary(
     @CurrentUser() user: JwtUser,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('userId') userId?: string,
   ) {
-    return this.dashboardService.getSummary(user, { from, to });
+    return this.dashboardService.getSummary(user, { from, to, userId });
   }
 }

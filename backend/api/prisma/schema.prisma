@@ -116,6 +116,13 @@ model Card {
   maskedNumber   String              // e.g. "4228 24** **** 7005"
   last4          String?  @unique    // indexed for fast lookup during statement import
   assignedUserId String?
+  // Card's credit limit in ZAR. Used by the live-spend tracker on the
+  // dashboard to compare against invoices uploaded since the last
+  // statement period ended. Nullable so cards without a set limit
+  // simply drop out of the tracker (rather than showing R 0 available).
+  // Auto-seeded at PDF-statement upload time when a "Credit limit"
+  // line can be parsed from the card section; admin can override.
+  creditLimit    Float?
   createdAt      DateTime @default(now())
 }
 

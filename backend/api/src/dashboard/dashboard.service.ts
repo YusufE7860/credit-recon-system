@@ -45,6 +45,10 @@ export interface DashboardSummary {
   };
   spendByCategory: Array<{ category: string; total: number; count: number }>;
   spendByMonth: Array<{ month: string; total: number; count: number }>;
+  // Split-cycle breakdown. Populated when the picked period spans more
+  // than one calendar month (e.g. statement 25 Jun → 24 Jul). Empty
+  // when the period fits inside a single calendar month.
+  spendByCalendarMonth: Array<{ month: string; total: number }>;
   recentTransactions: Array<{
     id: string;
     merchant: string;
@@ -66,6 +70,10 @@ export interface DashboardSummary {
 export interface SummaryOptions {
   from?: string; // ISO date — start of period (inclusive)
   to?: string;   // ISO date — end of period (inclusive, end-of-day)
+  // Admins/reporting can narrow the dashboard to a specific user's
+  // spend. Ignored for non-privileged callers (they're already scoped
+  // to themselves by role).
+  userId?: string;
 }
 
 @Injectable()
@@ -85,16 +93,22 @@ export class DashboardService {
     // Build the WHERE fragments used by every transaction/invoice query.
     // Empty userId scope = "no filter" (privileged users see everything).
     const scopedToSelf = !isPrivileged(currentUser.role);
+    // Effective user scope:
+    //   - non-privileged: locked to themselves regardless of options.userId
+    //   - privileged: uses options.userId if set, otherwise sees everyone
+    const effectiveUserId = scopedToSelf
+      ? currentUser.sub
+      : options.userId ?? null;
     const txFilter: Prisma.TransactionWhereInput = {
       transactionDate: { gte: from, lte: to },
-      ...(scopedToSelf ? { userId: currentUser.sub } : {}),
+      ...(effectiveUserId ? { userId: effectiveUserId } : {}),
     };
     // Invoices are dated by invoiceDate (the date on the invoice
     // itself, not when it was uploaded) — matches how the user thinks
     // about "March's spend" regardless of upload lag.
     const invFilter: Prisma.InvoiceWhereInput = {
       invoiceDate: { gte: from, lte: to },
-      ...(scopedToSelf ? { userId: currentUser.sub } : {}),
+      ...(effectiveUserId ? { userId: effectiveUserId } : {}),
     };
 
     const [
@@ -197,7 +211,7 @@ export class DashboardService {
       // For coverage: which statements overlap [from, to]?
       this.prisma.statement.findMany({
         where: {
-          ...(scopedToSelf ? { userId: currentUser.sub } : {}),
+          ...(effectiveUserId ? { userId: effectiveUserId } : {}),
           // Statement overlaps the window if its periodStart <= to AND
           // its periodEnd >= from. We accept nulls (older rows without
           // dates) and treat them as "unknown coverage" — they don't
@@ -238,8 +252,10 @@ export class DashboardService {
     // Recon stats — for non-privileged users we compute scoped counts here.
     // Both branches now apply the date range so the chart on screen
     // and the recon numbers line up with what the user picked.
-    const recon = scopedToSelf
-      ? await this.computeScopedReconStats(currentUser.sub, from, to)
+    // Recon tally honours the effective user scope too so an admin
+    // filtering to "just John" gets John's matched/unmatched counts.
+    const recon = effectiveUserId
+      ? await this.computeScopedReconStats(effectiveUserId, from, to)
       : await this.computeOrgReconStatsInRange(from, to);
 
     // Monthly spend. We keep returning the full history for the trend
@@ -270,6 +286,42 @@ export class DashboardService {
           GROUP BY month
           ORDER BY month ASC
         `;
+
+    // Split-cycle breakdown — only meaningful when the picked period
+    // spans more than one calendar month (typical for statement
+    // periods like 25 Jun → 24 Jul). We aggregate the raw transactions
+    // in-period by calendar month so the UI can label spend "R X in
+    // June, R Y in July". Empty array when the period fits inside a
+    // single calendar month.
+    let spendByCalendarMonth: Array<{ month: string; total: number }> = [];
+    const spansMultipleMonths =
+      from.getUTCMonth() !== to.getUTCMonth() ||
+      from.getUTCFullYear() !== to.getUTCFullYear();
+    if (spansMultipleMonths) {
+      const rows = await this.prisma.$queryRawUnsafe<
+        Array<{ month: Date; total: number }>
+      >(
+        `
+        SELECT
+          date_trunc('month', "transactionDate") AS month,
+          SUM(amount)::float AS total
+        FROM "Transaction"
+        WHERE amount > 0
+          AND "transactionDate" >= $1::timestamp
+          AND "transactionDate" <= $2::timestamp
+          ${effectiveUserId ? 'AND "userId" = $3' : ''}
+        GROUP BY month
+        ORDER BY month ASC
+        `,
+        from,
+        to,
+        ...(effectiveUserId ? [effectiveUserId] : []),
+      );
+      spendByCalendarMonth = rows.map((r) => ({
+        month: r.month.toISOString().slice(0, 7), // YYYY-MM
+        total: r.total,
+      }));
+    }
 
     return {
       range: { from: from.toISOString(), to: to.toISOString() },
@@ -311,6 +363,7 @@ export class DashboardService {
           }))
           .sort((a, b) => b.total - a.total);
       })(),
+      spendByCalendarMonth,
       spendByMonth: byMonthRaw.map((row) => ({
         month: row.month.toISOString().slice(0, 7),
         total: row.total,

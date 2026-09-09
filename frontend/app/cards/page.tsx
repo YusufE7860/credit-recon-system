@@ -19,6 +19,9 @@ type Card = {
   last4: string | null;
   assignedUserId: string | null;
   assignedUser: AssignedUser | null;
+  // Credit limit in ZAR. Nullable when never set — the live-spend
+  // tracker hides cards without a limit rather than showing R 0.
+  creditLimit: number | null;
   transactionCount: number;
   createdAt: string;
 };
@@ -36,6 +39,7 @@ interface CardDraft {
   maskedNumber: string;
   last4: string;
   assignedUserId: string;
+  creditLimit: string; // string so the input can be empty
 }
 
 const EMPTY_DRAFT: CardDraft = {
@@ -44,6 +48,7 @@ const EMPTY_DRAFT: CardDraft = {
   maskedNumber: '',
   last4: '',
   assignedUserId: '',
+  creditLimit: '',
 };
 
 export default function CardsPage() {
@@ -125,6 +130,36 @@ export default function CardsPage() {
     }
   }
 
+  // Edit credit limit — used by the live-spend tracker on the
+  // dashboard. Blank input = clear the limit (card drops out of the
+  // tracker until re-set).
+  async function handleEditLimit(card: Card) {
+    const current = card.creditLimit != null ? String(card.creditLimit) : '';
+    const next = prompt(
+      `Credit limit for "${card.cardName}" (ZAR). Blank to clear.`,
+      current,
+    );
+    if (next === null) return;
+    const trimmed = next.trim();
+    const parsed = trimmed === '' ? null : Number(trimmed);
+    if (parsed != null && (Number.isNaN(parsed) || parsed < 0)) {
+      setError('Credit limit must be a positive number, or blank.');
+      return;
+    }
+    setBusyCardId(card.id);
+    try {
+      await api(`/cards/${card.id}`, {
+        method: 'PATCH',
+        json: { creditLimit: parsed },
+      });
+      await reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Update failed');
+    } finally {
+      setBusyCardId(null);
+    }
+  }
+
   async function handleCreate() {
     if (!draft.cardName.trim() || !draft.maskedNumber.trim()) {
       setError('Card label and masked number are required.');
@@ -134,6 +169,9 @@ export default function CardsPage() {
     setError('');
     setMessage('');
     try {
+      const parsedLimit = draft.creditLimit.trim()
+        ? Number(draft.creditLimit)
+        : null;
       await api('/cards', {
         method: 'POST',
         json: {
@@ -142,6 +180,10 @@ export default function CardsPage() {
           maskedNumber: draft.maskedNumber.trim(),
           last4: draft.last4.trim() || undefined,
           assignedUserId: draft.assignedUserId || undefined,
+          creditLimit:
+            parsedLimit != null && !Number.isNaN(parsedLimit)
+              ? parsedLimit
+              : null,
         },
       });
       setMessage(`Card "${draft.cardName}" created.`);
@@ -344,6 +386,30 @@ export default function CardsPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Credit limit (ZAR)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500">R</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={draft.creditLimit}
+                      onChange={(e) =>
+                        setDraft({ ...draft, creditLimit: e.target.value })
+                      }
+                      placeholder="20000"
+                      className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Used by the dashboard live-spend tracker. Leave
+                    blank if unknown — the system will fill it in from
+                    the next statement if it appears there.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
                     Cardholder name (on card)
                   </label>
                   <input
@@ -496,6 +562,20 @@ export default function CardsPage() {
                         className="text-sm text-gray-600 hover:text-black mr-3"
                       >
                         Rename
+                      </button>
+                      <button
+                        onClick={() => handleEditLimit(c)}
+                        disabled={busyCardId === c.id}
+                        className="text-sm text-gray-600 hover:text-black mr-3"
+                        title={
+                          c.creditLimit != null
+                            ? `Current: R ${c.creditLimit.toLocaleString('en-ZA')}`
+                            : 'No limit set'
+                        }
+                      >
+                        {c.creditLimit != null
+                          ? `Limit: R ${c.creditLimit.toLocaleString('en-ZA')}`
+                          : 'Set limit'}
                       </button>
                       <button
                         onClick={() => handleDelete(c)}

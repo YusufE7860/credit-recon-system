@@ -585,12 +585,31 @@ export class StatementsService {
           cardholderName: section.cardholderName || null,
           maskedNumber: normalisedMasked,
           last4: normalisedLast4,
+          // Seed the credit limit from the parsed statement — the PDF
+          // usually prints it near the card header. Nullable if the
+          // parser couldn't find it; admin can fill it in later.
+          creditLimit: section.creditLimit,
           // assignedUserId stays null — admin must assign later.
         },
       });
       autoCreated = true;
       this.logger.log(
-        `Auto-created Card last4=${normalisedLast4 ?? '?'} (${section.cardholderName})`,
+        `Auto-created Card last4=${normalisedLast4 ?? '?'} (${section.cardholderName})${section.creditLimit ? ` · limit R${section.creditLimit.toFixed(0)}` : ''}`,
+      );
+    } else if (
+      // Existing card but no credit limit set — auto-fill from the
+      // fresh statement so the live-spend tracker has something to
+      // compare against. Never overwrite an existing manually-set
+      // value; the admin's number wins.
+      card.creditLimit == null &&
+      section.creditLimit != null
+    ) {
+      card = await tx.card.update({
+        where: { id: card.id },
+        data: { creditLimit: section.creditLimit },
+      });
+      this.logger.log(
+        `Backfilled credit limit for card last4=${normalisedLast4} → R${section.creditLimit.toFixed(0)}`,
       );
     }
 

@@ -14,6 +14,7 @@ export interface CreateCardInput {
   maskedNumber: string;
   last4?: string;
   assignedUserId?: string;
+  creditLimit?: number | null;
 }
 
 export interface UpdateCardInput {
@@ -22,6 +23,7 @@ export interface UpdateCardInput {
   maskedNumber?: string;
   last4?: string;
   assignedUserId?: string | null;
+  creditLimit?: number | null;
 }
 
 // Statement parsers sometimes hand us last4 with stray whitespace
@@ -268,5 +270,117 @@ export class CardsService {
 
       return updatedCard;
     });
+  }
+
+  // Live-spend tracker. For each card (scoped by role — USERs see only
+  // their own, admins/reporting see the whole company), compute:
+  //   - creditLimit         (from card, or null if not set)
+  //   - lastCycleEnd        (max periodEnd of statements covering this card)
+  //   - liveSpend           (sum of invoices dated AFTER lastCycleEnd,
+  //                          net of refunds and wallet-credit applied)
+  //   - available           (creditLimit - liveSpend, or null when no limit)
+  //
+  // The "since last cycle" model is what the user asked for: uploads
+  // during the current billing cycle draw down the limit; the moment a
+  // new statement is uploaded, lastCycleEnd moves forward and the
+  // counter effectively resets.
+  async getLiveSpend(currentUser: JwtUser) {
+    const scopedToSelf = !isPrivileged(currentUser.role);
+    const cardWhere = scopedToSelf
+      ? { assignedUserId: currentUser.sub }
+      : undefined;
+
+    const cards = await this.prisma.card.findMany({
+      where: cardWhere,
+      orderBy: { cardName: 'asc' },
+    });
+    if (cards.length === 0) return [];
+
+    // Look up the max statement periodEnd per card, keyed by last4.
+    // Statements have a periodStart/periodEnd derived from the imported
+    // transaction dates, so this genuinely reflects "the last billing
+    // cycle we have on file for this card".
+    const last4s = cards
+      .map((c) => c.last4)
+      .filter((l): l is string => !!l);
+    const statementTails = await this.prisma.transaction.groupBy({
+      by: ['cardLast4'],
+      where: {
+        cardLast4: { in: last4s },
+        // Only look at transactions attached to a real statement — a
+        // manually-created transaction shouldn't advance the cycle
+        // boundary.
+        statementId: { not: null },
+      },
+      _max: { transactionDate: true },
+    });
+    const cycleEndByLast4 = new Map<string, Date>();
+    for (const row of statementTails) {
+      if (row.cardLast4 && row._max.transactionDate) {
+        cycleEndByLast4.set(row.cardLast4, row._max.transactionDate);
+      }
+    }
+
+    // For each card compute liveSpend. We aggregate in JS because the
+    // per-card window varies (each card can have a different
+    // lastCycleEnd). Fine for the small number of cards a company has.
+    const results = await Promise.all(
+      cards.map(async (card) => {
+        const cycleEnd = card.last4
+          ? cycleEndByLast4.get(card.last4) ?? null
+          : null;
+
+        // If the card isn't assigned to a user yet we still show the
+        // card but with liveSpend=0 — we don't know whose invoices to
+        // count against it.
+        const ownerId = card.assignedUserId;
+        let liveSpend = 0;
+        if (ownerId) {
+          const invs = await this.prisma.invoice.findMany({
+            where: {
+              userId: ownerId,
+              // Only invoices dated after the cycle ended — those are
+              // the "in-progress" ones. Falls back to all invoices
+              // when there's no prior statement (first cycle).
+              ...(cycleEnd
+                ? { invoiceDate: { gt: cycleEnd } }
+                : {}),
+            },
+            select: {
+              total: true,
+              totalZAR: true,
+              creditApplied: true,
+              kind: true,
+            },
+          });
+          for (const inv of invs) {
+            const gross = inv.totalZAR ?? inv.total ?? 0;
+            const effective = Math.max(
+              0,
+              gross - (inv.creditApplied ?? 0),
+            );
+            liveSpend += inv.kind === 'REFUND' ? -effective : effective;
+          }
+        }
+
+        const available =
+          card.creditLimit != null
+            ? Math.max(0, card.creditLimit - liveSpend)
+            : null;
+
+        return {
+          cardId: card.id,
+          cardName: card.cardName,
+          cardholderName: card.cardholderName,
+          last4: card.last4,
+          assignedUserId: card.assignedUserId,
+          creditLimit: card.creditLimit,
+          lastCycleEnd: cycleEnd ? cycleEnd.toISOString() : null,
+          liveSpend,
+          available,
+        };
+      }),
+    );
+    return results;
   }
 }

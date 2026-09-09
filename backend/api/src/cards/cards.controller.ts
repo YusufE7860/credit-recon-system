@@ -34,6 +34,14 @@ export class CardsController {
     return this.cardsService.getCards(user);
   }
 
+  // GET /cards/live-spend — per-card {creditLimit, liveSpend, available}
+  // for the dashboard "live spend tracker" widget. Scoped by role:
+  // USERs see only cards assigned to them, admins see all.
+  @Get('live-spend')
+  liveSpend(@CurrentUser() user: JwtUser) {
+    return this.cardsService.getLiveSpend(user);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.cardsService.getCardById(id, user);
