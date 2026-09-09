@@ -109,10 +109,26 @@ export class StatementsService {
   ) {}
 
   async list(currentUser: JwtUser) {
+    // Visibility rules:
+    //   - ADMIN/REPORTING: every statement.
+    //   - USER: statements that they uploaded OR that contain any of
+    //     their transactions (so the dashboard's Statement dropdown
+    //     shows periods where they actually had spend, not only ones
+    //     they themselves happened to upload — which is nearly never).
+    //   - UPLOADER: only what they uploaded (rarely any). Kept for
+    //     backward compat; UPLOADERs don't see the dashboard anyway.
+    const where = isPrivileged(currentUser.role)
+      ? undefined
+      : currentUser.role === 'USER'
+      ? {
+          OR: [
+            { userId: currentUser.sub },
+            { transactions: { some: { userId: currentUser.sub } } },
+          ],
+        }
+      : { userId: currentUser.sub };
     return this.prisma.statement.findMany({
-      where: isPrivileged(currentUser.role)
-        ? undefined
-        : { userId: currentUser.sub },
+      where,
       orderBy: { createdAt: 'desc' },
       include: {
         _count: { select: { transactions: true } },
