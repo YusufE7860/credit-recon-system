@@ -13,6 +13,7 @@ const KEYS = {
   SMTP_USER: 'smtp.user',
   SMTP_PASS: 'smtp.pass',
   MAIL_FROM: 'mail.from',
+  SMTP_TLS_REJECT_UNAUTHORIZED: 'smtp.tlsRejectUnauthorized',
   FX_USD: 'fx.usd', FX_EUR: 'fx.eur', FX_GBP: 'fx.gbp',
   FX_CNY: 'fx.cny', FX_JPY: 'fx.jpy', FX_SAR: 'fx.sar',
   FX_AED: 'fx.aed', FX_AUD: 'fx.aud', FX_CAD: 'fx.cad', FX_INR: 'fx.inr',
@@ -93,6 +94,27 @@ export default function SettingsPage() {
                 <Field label="Username" value={values[KEYS.SMTP_USER]} onChange={(v) => set(KEYS.SMTP_USER, v)} placeholder="username or API key" />
                 <Field label="Password" type="password" value={values[KEYS.SMTP_PASS] === '__set__' ? '' : values[KEYS.SMTP_PASS]} onChange={(v) => set(KEYS.SMTP_PASS, v)} placeholder={values[KEYS.SMTP_PASS] === '__set__' ? '••••••• (saved — type to replace)' : 'password'} />
                 <Field label="From address" value={values[KEYS.MAIL_FROM]} onChange={(v) => set(KEYS.MAIL_FROM, v)} placeholder='FFG Recon <noreply@yourdomain.co.za>' />
+
+                {/* TLS cert hostname override — needed when the SMTP
+                    server presents a shared/wildcard certificate that
+                    doesn't match the vanity host (common on cPanel-
+                    style hosting). Only enable when you've verified
+                    via the API logs that this is your actual error. */}
+                <SelectField
+                  label="Skip TLS hostname check"
+                  value={String(values[KEYS.SMTP_TLS_REJECT_UNAUTHORIZED] ?? 'false')}
+                  onChange={(v) => set(KEYS.SMTP_TLS_REJECT_UNAUTHORIZED, v === 'true')}
+                  options={[
+                    ['false', 'false (strict — recommended)'],
+                    ['true', 'true (bypass — use only for shared-hosting SMTP)'],
+                  ]}
+                />
+                <p className="text-xs text-gray-500">
+                  Set the TLS override to <strong>true</strong> only if
+                  you see <code>ERR_TLS_CERT_ALTNAME_INVALID</code> in
+                  the API logs. Otherwise leave it at false.
+                </p>
+
                 <p className="text-xs text-gray-500">If any of host/user is blank, the mailer logs reset emails to the backend console instead of sending.</p>
               </>
             )}

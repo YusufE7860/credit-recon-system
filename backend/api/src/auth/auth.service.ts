@@ -113,7 +113,21 @@ export class AuthService {
       this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
     const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
 
-    await this.mailer.sendPasswordReset(user.email, user.name, resetUrl);
+    // Swallow SMTP errors: a broken mail server must never break the
+    // forgot-password endpoint (returning 500 also leaks the fact that
+    // this email exists, since a fake one hits the early-return above).
+    // The token has already been stored — the admin can grab the reset
+    // URL from the logs while SMTP is being sorted out.
+    try {
+      await this.mailer.sendPasswordReset(user.email, user.name, resetUrl);
+    } catch (err) {
+      this.logger.error(
+        `Failed to send password reset email to ${user.email}: ${(err as Error).message}`,
+      );
+      this.logger.log(
+        `Manual reset URL (SMTP failed) for ${user.email}: ${resetUrl}`,
+      );
+    }
 
     return { success: true };
   }

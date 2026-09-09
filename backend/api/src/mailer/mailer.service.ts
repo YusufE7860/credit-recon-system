@@ -38,10 +38,22 @@ export class MailerService implements OnModuleInit {
     if (from) this.fromAddress = from;
 
     if (host && user) {
+      // Skip TLS hostname verification when the admin has flipped the
+      // toggle — needed for shared-cPanel style SMTP where the vanity
+      // hostname doesn't match the wildcard cert served up. Full TLS
+      // negotiation and encryption still happen; ONLY the hostname
+      // check is bypassed. Default off (full verification).
+      const skipTlsVerify = this.settings.getBoolean(
+        SETTING_KEYS.SMTP_TLS_REJECT_UNAUTHORIZED,
+        false,
+      );
       this.transporter = nodemailer.createTransport({
         host,
         port: this.settings.getNumber(SETTING_KEYS.SMTP_PORT, 587),
         secure: this.settings.getBoolean(SETTING_KEYS.SMTP_SECURE, false),
+        tls: skipTlsVerify
+          ? { rejectUnauthorized: false }
+          : undefined,
         auth: {
           user,
           pass: this.settings.getString(SETTING_KEYS.SMTP_PASS),

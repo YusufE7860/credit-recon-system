@@ -13,6 +13,13 @@ export const SETTING_KEYS = {
   SMTP_USER: 'smtp.user',
   SMTP_PASS: 'smtp.pass',
   MAIL_FROM: 'mail.from',
+  // Disables TLS hostname verification. Needed when the SMTP server's
+  // certificate is a shared/wildcard cert issued to the hosting
+  // provider (e.g. cPanel setups where mail.example.com actually
+  // responds with a cert for *.provider.net). Default false = full
+  // TLS validation. Set true only when you know your provider's cert
+  // is shared and there's no other way to reach the mailbox.
+  SMTP_TLS_REJECT_UNAUTHORIZED: 'smtp.tlsRejectUnauthorized',
 
   // FX rates (per ISO currency code → ZAR). Used only as a fallback
   // when historical lookup fails — see HistoricalFxService.
@@ -63,6 +70,7 @@ const ENV_FALLBACK: Partial<Record<SettingKey, string>> = {
   [SETTING_KEYS.SMTP_USER]:   'SMTP_USER',
   [SETTING_KEYS.SMTP_PASS]:   'SMTP_PASS',
   [SETTING_KEYS.MAIL_FROM]:   'MAIL_FROM',
+  [SETTING_KEYS.SMTP_TLS_REJECT_UNAUTHORIZED]: 'SMTP_TLS_REJECT_UNAUTHORIZED',
   [SETTING_KEYS.FX_USD]:      'FX_USD_ZAR',
   [SETTING_KEYS.FX_EUR]:      'FX_EUR_ZAR',
   [SETTING_KEYS.FX_GBP]:      'FX_GBP_ZAR',

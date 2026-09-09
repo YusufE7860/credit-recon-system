@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Patch, Body, UseGuards,
+  Controller, Get, Patch, Body, UseGuards, Logger,
 } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { MailerService } from '../mailer/mailer.service';
@@ -14,6 +14,8 @@ import type { JwtUser } from '../auth/role.enum';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN)
 export class SettingsController {
+  private readonly logger = new Logger(SettingsController.name);
+
   constructor(
     private settingsService: SettingsService,
     private mailerService: MailerService,
@@ -32,7 +34,18 @@ export class SettingsController {
   ) {
     await this.settingsService.setMany(body, user.sub);
     // Mail settings might have changed — rebuild the SMTP transporter.
-    await this.mailerService.reconfigure();
-    return { success: true };
+    // If the rebuild throws (bad SMTP details), don't fail the whole
+    // save; log it and let the admin retry. Their category/store/etc.
+    // changes shouldn't disappear because SMTP is misconfigured.
+    let mailWarning: string | null = null;
+    try {
+      await this.mailerService.reconfigure();
+    } catch (err) {
+      mailWarning = (err as Error).message;
+      this.logger.warn(
+        `Settings saved, but mailer.reconfigure failed: ${mailWarning}`,
+      );
+    }
+    return { success: true, mailWarning };
   }
 }

@@ -28,10 +28,21 @@ def add_page_break(doc):
 def add_image(doc, filename, caption, max_width_inches=5.5):
     """Insert a screenshot with a caption, or silently skip if the file
     doesn't exist yet. max_width_inches caps oversized captures so they
-    don't run off the printable page."""
+    don't run off the printable page.
+
+    Extension-tolerant: if the exact filename is missing we try the
+    same basename with the sibling extensions (.png/.jpg/.jpeg) so the
+    user doesn't have to worry which format their phone saved."""
     path = os.path.join(IMAGES_DIR, filename)
     if not os.path.exists(path):
-        return
+        base, _ = os.path.splitext(filename)
+        for ext in ('.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG'):
+            alt = os.path.join(IMAGES_DIR, base + ext)
+            if os.path.exists(alt):
+                path = alt
+                break
+        else:
+            return
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = p.add_run()
