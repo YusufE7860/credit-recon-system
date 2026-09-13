@@ -49,6 +49,10 @@ type Invoice = {
   transaction: Transaction | null;
   editUnlockedUntil: string | null;
   metadataUnlockedUntil: string | null;
+  // Owner ID — used client-side to decide who can edit amounts. Backend
+  // enforces the same check regardless; this is just for showing/hiding
+  // the input's readOnly state without a second round-trip.
+  userId?: string;
   createdAt: string;
   // Optional line-item splits (multi-category invoices).
   splits?: InvoiceSplit[];
