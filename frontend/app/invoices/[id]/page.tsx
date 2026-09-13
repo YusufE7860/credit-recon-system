@@ -482,6 +482,11 @@ export default function InvoiceDetailPage() {
   // NOW given the current user's role and the invoice's unlock state.
   function isFieldUnlocked(fieldName: string): boolean {
     if (user?.role === 'ADMIN') return true;
+    // Defensive — this helper is invoked from the render block only
+    // AFTER the invoice has loaded, but TS's control-flow narrowing
+    // can't see across the function boundary. Explicit fallback keeps
+    // the type checker happy without changing behaviour.
+    if (!invoice) return false;
     const unlocked = invoice.unlockedFields ?? [];
     // Non-empty list = per-field mode: only the ticked ones are open.
     if (unlocked.length > 0) return unlocked.includes(fieldName);
