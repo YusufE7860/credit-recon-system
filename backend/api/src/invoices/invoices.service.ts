@@ -10,6 +10,7 @@ import { ReconStatus, Prisma } from '@prisma/client';
 import { OcrService } from '../ocr/ocr.service';
 import { InvoiceParserService } from '../ocr/invoice-parser.service';
 import { CurrencyService } from '../ocr/currency.service';
+import type { Currency } from '../ocr/currency.service';
 import { AIInvoiceExtractorService } from '../ocr/ai-extractor.service';
 import { ReconciliationService } from '../reconciliation/reconciliation.service';
 import { Inject, forwardRef as injectForwardRef } from '@nestjs/common';
@@ -793,9 +794,14 @@ export class InvoicesService {
         const effectiveDate = input.invoiceDate
           ? new Date(input.invoiceDate)
           : invoice.invoiceDate;
+        // Prisma types `currency` as `string`, but the FX helper
+        // expects the narrower `Currency` union. Cast — if the DB
+        // contains an unsupported code the helper falls back to the
+        // configured default rate, so a mislabelled invoice can never
+        // break this code path.
         const { amount, rate } = await this.currency.toZARAtDate(
           input.total,
-          invoice.currency,
+          invoice.currency as Currency,
           effectiveDate,
         );
         newTotalZAR = amount;
