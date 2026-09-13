@@ -36,9 +36,15 @@ const CARD_HEADER_RE =
   /^(\d{4}\s+\d{2}\*\*\s+\*\*\*\*\s+\d{4})\s+-\s+Limits\s+([\d\s]+\.\d{2})\s+[\d\s]+\.\d{2}\s*$/;
 
 // "15 Apr Payfast*Go Gadgets Somerset West 12 050.00 0.00"
+// Also matches credit lines with a space before "Cr":
+//   "09 Aug Al-Haramain Speed Rail King Abdullah 1 241.53 Cr 0.00"
+// The \s* between amount and (Cr)? is critical — some banks (FNB
+// Business) print the Cr suffix separated by whitespace. Without it,
+// every credit line silently failed the regex and got dropped, making
+// the statement total look smaller than it actually was.
 // Captures: date, body (merchant + maybe location), amount, optional Cr, second amount (ignored).
 const TXN_RE =
-  /^(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(\d{1,3}(?:\s\d{3})*(?:\.\d{2})?)(Cr)?\s+(\d+\.\d{2})\s*$/;
+  /^(\d{1,2}\s+[A-Za-z]{3})\s+(.+?)\s+(\d{1,3}(?:\s\d{3})*(?:\.\d{2})?)\s*(Cr)?\s+(\d+\.\d{2})\s*$/;
 
 // Header date in the page footer: "2026/04/25"
 const STATEMENT_DATE_RE = /(\d{4})\/(\d{2})\/(\d{2})/;
