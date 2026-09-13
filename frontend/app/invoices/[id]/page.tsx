@@ -49,6 +49,9 @@ type Invoice = {
   transaction: Transaction | null;
   editUnlockedUntil: string | null;
   metadataUnlockedUntil: string | null;
+  // Specific fields the admin unlocked. When non-empty AND the relevant
+  // time window is active, ONLY these fields are editable via unlock.
+  unlockedFields?: string[];
   // Owner ID — used client-side to decide who can edit amounts. Backend
   // enforces the same check regardless; this is just for showing/hiding
   // the input's readOnly state without a second round-trip.
@@ -291,6 +294,7 @@ export default function InvoiceDetailPage() {
           notes: inv.notes,
           supplier: inv.supplier,
           invoiceNumber: inv.invoiceNumber,
+          subtotal: inv.subtotal,
           total: inv.total,
           vat: inv.vat,
           kind: inv.kind ?? 'PURCHASE',
@@ -371,6 +375,7 @@ export default function InvoiceDetailPage() {
         notes: updated.notes,
         supplier: updated.supplier,
         invoiceNumber: updated.invoiceNumber,
+        subtotal: updated.subtotal,
         total: updated.total,
         vat: updated.vat,
         kind: updated.kind ?? 'PURCHASE',
@@ -460,15 +465,30 @@ export default function InvoiceDetailPage() {
   // for review, or an admin has approved an unlock request.
   const financialsLocked = !invoice.requiresReview && !unlockActive;
 
-  // Amount fields (Total / VAT) are editable by ADMIN or the invoice
-  // owner (the cardholder). UPLOADERs are still blocked (they never
-  // see money fields anyway — hideMoney handles that). Backend enforces
-  // the same rules and audits every change.
+  // Amount fields (Total / VAT / Subtotal) are editable by ADMIN or the
+  // invoice owner (the cardholder). UPLOADERs are still blocked (they
+  // never see money fields anyway — hideMoney handles that). Backend
+  // enforces the same rules and audits every change.
   const canEditAmounts =
     !hideMoney &&
     (user?.role === 'ADMIN' ||
       user?.role === 'REPORTING' ||
       invoice.userId === user?.id);
+
+  // Fine-grained field unlock. When the admin approved a request with
+  // specific fields ticked, only those fields become editable via the
+  // unlock window. Admins bypass the check entirely (they can edit
+  // anything). Returns true when THIS specific field is editable RIGHT
+  // NOW given the current user's role and the invoice's unlock state.
+  function isFieldUnlocked(fieldName: string): boolean {
+    if (user?.role === 'ADMIN') return true;
+    const unlocked = invoice.unlockedFields ?? [];
+    // Non-empty list = per-field mode: only the ticked ones are open.
+    if (unlocked.length > 0) return unlocked.includes(fieldName);
+    // Empty list = legacy "all fields in bucket" behaviour (kept for
+    // backward compat with previously-approved requests).
+    return true;
+  }
 
   async function submitEditRequest(
     type: 'FINANCIAL' | 'METADATA' = 'FINANCIAL',
@@ -646,16 +666,16 @@ export default function InvoiceDetailPage() {
               />
               {!hideMoney && (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     {/* Amounts editable by owner + admin so OCR
                         misreads can be corrected. Every change is
                         audit-logged on the backend with before/after
                         values, so tampering leaves a trail. */}
                     <DetailField
-                      label={`Total (${invoice.currency})`}
-                      value={String(edits.total ?? 0)}
+                      label={`Subtotal (${invoice.currency})`}
+                      value={String(edits.subtotal ?? 0)}
                       onChange={(v) =>
-                        setEdits({ ...edits, total: Number(v) || 0 })
+                        setEdits({ ...edits, subtotal: Number(v) || 0 })
                       }
                       readOnly={!canEditAmounts}
                     />
@@ -664,6 +684,14 @@ export default function InvoiceDetailPage() {
                       value={String(edits.vat ?? 0)}
                       onChange={(v) =>
                         setEdits({ ...edits, vat: Number(v) || 0 })
+                      }
+                      readOnly={!canEditAmounts}
+                    />
+                    <DetailField
+                      label={`Total (${invoice.currency})`}
+                      value={String(edits.total ?? 0)}
+                      onChange={(v) =>
+                        setEdits({ ...edits, total: Number(v) || 0 })
                       }
                       readOnly={!canEditAmounts}
                     />
@@ -802,11 +830,19 @@ export default function InvoiceDetailPage() {
                 </div>
               )}
 
+              {/* For UPLOADERs, each metadata field is editable ONLY when
+                  the metadata unlock window is active AND the admin
+                  ticked that specific field in the approval modal.
+                  Owner/admin always edit freely (isFieldUnlocked returns
+                  true for admin; owner path bypasses hideMoney). */}
               <DetailField
                 label="Category"
                 value={edits.category ?? ''}
                 onChange={(v) => setEdits({ ...edits, category: v })}
-                readOnly={hideMoney && !metaUnlockActive}
+                readOnly={
+                  hideMoney &&
+                  (!metaUnlockActive || !isFieldUnlocked('category'))
+                }
               />
               <DetailField
                 label="Cost center / allocation"
@@ -814,14 +850,20 @@ export default function InvoiceDetailPage() {
                 onChange={(v) =>
                   setEdits({ ...edits, storeAllocation: v })
                 }
-                readOnly={hideMoney && !metaUnlockActive}
+                readOnly={
+                  hideMoney &&
+                  (!metaUnlockActive || !isFieldUnlocked('storeAllocation'))
+                }
               />
               <DetailField
                 label="Notes"
                 value={edits.notes ?? ''}
                 onChange={(v) => setEdits({ ...edits, notes: v })}
                 multiline
-                readOnly={hideMoney && !metaUnlockActive}
+                readOnly={
+                  hideMoney &&
+                  (!metaUnlockActive || !isFieldUnlocked('notes'))
+                }
               />
 
               {/* Hide Save button for UPLOADERs while metadata is sealed. */}

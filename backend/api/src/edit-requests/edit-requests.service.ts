@@ -162,11 +162,15 @@ export class EditRequestsService {
     });
   }
 
-  // Admin approves a pending request.
+  // Admin approves a pending request. `approvedFields` lets the admin
+  // pick specific fields to unlock (finer than the historic all-or-
+  // nothing bucket unlock). When empty/undefined, the legacy
+  // "unlock the whole bucket" behaviour applies for backward compat.
   async approve(
     id: string,
     reviewerId: string,
     reviewNote: string | null,
+    approvedFields?: string[],
   ) {
     const request = await this.prisma.editRequest.findUnique({
       where: { id },
@@ -184,6 +188,26 @@ export class EditRequestsService {
     );
     const approvedUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
 
+    // Sanitize the admin-approved field list. Only allow well-known
+    // field names; drop anything else so a malicious/typo'd payload
+    // can't unlock nonsense.
+    const ALLOWED_FIELDS =
+      request.type === EditRequestType.METADATA
+        ? ['category', 'storeAllocation', 'notes']
+        : [
+            'supplier',
+            'invoiceNumber',
+            'invoiceDate',
+            'total',
+            'vat',
+            'subtotal',
+            'kind',
+            'creditApplied',
+          ];
+    const cleanApprovedFields = (approvedFields ?? []).filter((f) =>
+      ALLOWED_FIELDS.includes(f),
+    );
+
     // Pick the unlock field based on the request type. FINANCIAL unlocks
     // OCR-extracted fields; METADATA unlocks category/store/notes.
     const unlockField =
@@ -194,7 +218,13 @@ export class EditRequestsService {
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.invoice.update({
         where: { id: request.invoiceId },
-        data: unlockField,
+        data: {
+          ...unlockField,
+          // Set the specific unlocked fields. Empty array = legacy
+          // "any field in the bucket" — the invoice update code
+          // preserves that fallback for old flows.
+          unlockedFields: cleanApprovedFields,
+        },
       });
       return tx.editRequest.update({
         where: { id },
@@ -204,6 +234,7 @@ export class EditRequestsService {
           reviewedAt: new Date(),
           reviewNote,
           approvedUntil,
+          approvedFields: cleanApprovedFields,
         },
       });
     });

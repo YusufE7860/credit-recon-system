@@ -538,7 +538,11 @@ export default function Dashboard() {
               value={
                 summary.totalTransactions === 0
                   ? '—'
-                  : fmtZAR(summary.statementSpend)
+                  // Net = purchases + refunds. Matches the "Transactions"
+                  // line on the FNB statement (bank's own figure is
+                  // already net, so this makes them directly
+                  // comparable). Refunds and the gross break out below.
+                  : fmtZAR(summary.netSpend)
               }
               sub={
                 summary.totalTransactions === 0
@@ -555,18 +559,37 @@ export default function Dashboard() {
               // the accountant can see how the total splits by month
               // for month-end journals. Empty otherwise.
               footer={
-                summary.spendByCalendarMonth.length > 1
-                  ? (
-                      <p className="text-xs text-gray-500 mt-1">
-                        {summary.spendByCalendarMonth
-                          .map(
-                            (m) =>
-                              `${fmtZAR(m.total)} in ${new Date(m.month + '-01').toLocaleString('en-ZA', { month: 'short' })}`,
-                          )
-                          .join(' · ')}
-                      </p>
-                    )
-                  : null
+                <div className="mt-1">
+                  {/* Gross + refunds breakdown — makes the "net" figure
+                      above transparent. Refunds are stored negative,
+                      so we display the absolute value with an explicit
+                      "-" for clarity. */}
+                  {summary.totalTransactions > 0 && (
+                    <p className="text-xs text-gray-600">
+                      {fmtZAR(summary.totalPurchases)} spent
+                      {summary.totalRefunds < 0 && (
+                        <>
+                          {' · '}
+                          <span className="text-green-700">
+                            {fmtZAR(Math.abs(summary.totalRefunds))} refunded
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {/* Split-cycle breakdown — statement cycles usually
+                      span 2 calendar months, so we show both. */}
+                  {summary.spendByCalendarMonth.length > 1 && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {summary.spendByCalendarMonth
+                        .map(
+                          (m) =>
+                            `${fmtZAR(m.total)} in ${new Date(m.month + '-01').toLocaleString('en-ZA', { month: 'short' })}`,
+                        )
+                        .join(' · ')}
+                    </p>
+                  )}
+                </div>
               }
             />
             <SummaryCard

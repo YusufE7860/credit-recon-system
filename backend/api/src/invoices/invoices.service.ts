@@ -759,6 +759,43 @@ export class InvoicesService {
       }
     }
 
+    // Fine-grained field gating. When the invoice has a non-empty
+    // unlockedFields list AND we're relying on an unlock (either
+    // financial or metadata), every field being edited must be in
+    // that list. Admin bypass — they can edit anything regardless.
+    if (
+      !isAdmin &&
+      (consumesUnlock || consumesMetaUnlock) &&
+      invoice.unlockedFields.length > 0
+    ) {
+      const editedFieldNames: string[] = [];
+      // Only include fields the user actually changed (not undefined).
+      const fieldMap: Record<string, unknown> = {
+        supplier: input.supplier,
+        invoiceNumber: input.invoiceNumber,
+        invoiceDate: input.invoiceDate,
+        total: input.total,
+        vat: input.vat,
+        subtotal: input.subtotal,
+        kind: input.kind,
+        creditApplied: input.creditApplied,
+        category: input.category,
+        storeAllocation: input.storeAllocation,
+        notes: input.notes,
+      };
+      for (const [name, value] of Object.entries(fieldMap)) {
+        if (value !== undefined) editedFieldNames.push(name);
+      }
+      const forbidden = editedFieldNames.filter(
+        (f) => !invoice.unlockedFields.includes(f),
+      );
+      if (forbidden.length > 0) {
+        throw new ForbiddenException(
+          `The admin only unlocked ${invoice.unlockedFields.join(', ')} on this invoice. Can't edit ${forbidden.join(', ')}.`,
+        );
+      }
+    }
+
     return this.prisma.$transaction(async (tx) => {
       // If a financial unlock is being consumed, mark APPROVED FINANCIAL
       // requests for this invoice as USED.
@@ -875,6 +912,11 @@ export class InvoicesService {
             consumesUnlock || (editingFinancials && isAdmin) ? null : undefined,
           // Clear the metadata unlock when consumed.
           metadataUnlockedUntil: consumesMetaUnlock ? null : undefined,
+          // Clear the specific-field unlock list once ANY unlock is
+          // consumed. The admin's approval was a single-use grant;
+          // future edits need a fresh request.
+          unlockedFields:
+            consumesUnlock || consumesMetaUnlock ? [] : undefined,
         },
       });
     });

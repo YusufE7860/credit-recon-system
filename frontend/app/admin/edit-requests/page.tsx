@@ -78,23 +78,56 @@ export default function EditRequestsAdminPage() {
     ? requests.filter((r) => r.type === typeFilter)
     : requests;
 
-  async function handleApprove(req: EditRequest) {
-    const note = prompt(
-      `Approve ${req.type.toLowerCase()} edit for "${req.invoice.supplier}"?\n\nOptional note for the user (leave blank to skip):`,
-      '',
-    );
-    // prompt returns null when the user hits Cancel. Empty string is OK
-    // (they hit OK without a note) — treat that as "approve, no note".
-    if (note === null) return;
-    setBusyId(req.id);
+  // Approve modal state — open with `openApproveModal(req)` and the
+  // admin can pick specific fields to unlock plus add a note.
+  const [approveModal, setApproveModal] = useState<EditRequest | null>(null);
+  const [approveNote, setApproveNote] = useState('');
+  const [approveFields, setApproveFields] = useState<string[]>([]);
+
+  function openApproveModal(req: EditRequest) {
+    // Pre-tick the fields the user said they want to change (from
+    // fieldsToEdit hint). Admin can adjust.
+    const requested = (req.fieldsToEdit ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const validFields =
+      req.type === 'METADATA'
+        ? ['category', 'storeAllocation', 'notes']
+        : [
+            'supplier',
+            'invoiceNumber',
+            'invoiceDate',
+            'total',
+            'vat',
+            'subtotal',
+            'kind',
+            'creditApplied',
+          ];
+    setApproveFields(requested.filter((f) => validFields.includes(f)));
+    setApproveNote('');
+    setApproveModal(req);
+  }
+
+  async function confirmApprove() {
+    if (!approveModal) return;
+    setBusyId(approveModal.id);
     try {
-      await api(`/edit-requests/${req.id}/approve`, {
+      await api(`/edit-requests/${approveModal.id}/approve`, {
         method: 'POST',
-        json: { note: note || undefined },
+        json: {
+          note: approveNote || undefined,
+          approvedFields: approveFields,
+        },
       });
+      const fieldsLabel =
+        approveFields.length > 0
+          ? approveFields.join(', ')
+          : 'no fields (soft approve)';
       setMessage(
-        `Approved. ${req.requestedBy.name} now has 24h to edit ${req.type.toLowerCase()} fields on ${req.invoice.supplier}.`,
+        `Approved. ${approveModal.requestedBy.name} now has 24h to edit ${fieldsLabel} on ${approveModal.invoice.supplier}.`,
       );
+      setApproveModal(null);
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Approve failed');
@@ -265,11 +298,11 @@ export default function EditRequestsAdminPage() {
                 {req.status === 'PENDING' && (
                   <div className="mt-4 flex gap-2">
                     <button
-                      onClick={() => handleApprove(req)}
+                      onClick={() => openApproveModal(req)}
                       disabled={busyId === req.id}
                       className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:opacity-90"
                     >
-                      Approve
+                      Approve...
                     </button>
                     <button
                       onClick={() => handleReject(req)}
@@ -284,6 +317,123 @@ export default function EditRequestsAdminPage() {
             ))}
           </div>
         )}
+
+        {/* Approve modal — admin ticks which specific fields to unlock,
+            optional note. Field list depends on request type. */}
+        {approveModal && (() => {
+          const validFields =
+            approveModal.type === 'METADATA'
+              ? ['category', 'storeAllocation', 'notes']
+              : [
+                  'supplier',
+                  'invoiceNumber',
+                  'invoiceDate',
+                  'total',
+                  'vat',
+                  'subtotal',
+                  'kind',
+                  'creditApplied',
+                ];
+          const requestedSet = new Set(
+            (approveModal.fieldsToEdit ?? '')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+          );
+          return (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+              onClick={() => busyId === null && setApproveModal(null)}
+            >
+              <div
+                className="bg-white rounded-xl w-full max-w-lg shadow-2xl p-6"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-lg font-semibold">
+                  Approve {approveModal.type.toLowerCase()} edit —{' '}
+                  {approveModal.invoice.supplier}
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Pick which fields to unlock. The user will be able to
+                  edit only these for the next 24 hours.
+                </p>
+                <p className="text-xs text-gray-500 mt-2">
+                  Requested by {approveModal.requestedBy.name}:{' '}
+                  <em>{approveModal.reason}</em>
+                </p>
+
+                <div className="mt-4 border border-gray-200 rounded-lg p-3 space-y-2">
+                  {validFields.map((field) => {
+                    const requested = requestedSet.has(field);
+                    const checked = approveFields.includes(field);
+                    return (
+                      <label
+                        key={field}
+                        className="flex items-center gap-2 text-sm cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setApproveFields([...approveFields, field]);
+                            } else {
+                              setApproveFields(
+                                approveFields.filter((f) => f !== field),
+                              );
+                            }
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="font-mono">{field}</span>
+                        {requested && (
+                          <span className="text-[10px] uppercase tracking-wider bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                            user asked
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <label className="block mt-4">
+                  <span className="text-sm font-medium text-gray-700">
+                    Note for the user (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={approveNote}
+                    onChange={(e) => setApproveNote(e.target.value)}
+                    placeholder="e.g. Fix the total to 213.60 — the receipt shows 79.90 was a line item"
+                    className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  />
+                </label>
+
+                <div className="mt-5 flex gap-2 justify-end">
+                  <button
+                    onClick={() => setApproveModal(null)}
+                    disabled={busyId !== null}
+                    className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmApprove}
+                    disabled={busyId !== null || approveFields.length === 0}
+                    className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:opacity-90 disabled:opacity-40"
+                    title={
+                      approveFields.length === 0
+                        ? 'Tick at least one field to unlock'
+                        : ''
+                    }
+                  >
+                    {busyId ? 'Approving...' : 'Approve & unlock'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </section>
     </main>
   );

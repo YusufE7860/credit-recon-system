@@ -78,17 +78,21 @@ export class EditRequestsController {
   }
 
   // POST /edit-requests/:id/approve
+  //   body.approvedFields lets the admin pick which specific fields to
+  //   unlock (e.g. ["total","supplier"]). Empty/missing = legacy
+  //   "unlock the whole bucket" behaviour.
   @Post(':id/approve')
   @Roles(Role.ADMIN)
   approve(
     @Param('id') id: string,
-    @Body() body: { note?: string },
+    @Body() body: { note?: string; approvedFields?: string[] },
     @CurrentUser() user: JwtUser,
   ) {
     return this.editRequestsService.approve(
       id,
       user.sub,
       body?.note ?? null,
+      body?.approvedFields,
     );
   }
 

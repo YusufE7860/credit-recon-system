@@ -282,6 +282,13 @@ model Invoice {
   // Note: at upload time the metadata IS editable (initial fill-in),
   // so we don't lock until first persistence completes.
   metadataUnlockedUntil DateTime?
+  // Specific fields the admin unlocked on the latest approved request.
+  // e.g. ["total","supplier"] — only these become editable while the
+  // relevant time window (edit/metadata) is active. Empty array
+  // combined with an active window means "no legacy fallback, admin
+  // opted out of unlocking anything at field level". Kept simple as
+  // one array covering both buckets since field names never overlap.
+  unlockedFields String[] @default([])
 
   // ---- Ownership ----
   // userId = the cardholder this invoice belongs to (its "owner").
@@ -340,6 +347,14 @@ model EditRequest {
   // What the user wants to edit. Defaults to FINANCIAL for backward
   // compatibility with rows that pre-date this column.
   type          EditRequestType @default(FINANCIAL)
+
+  // Which specific fields the ADMIN approved for editing. Written on
+  // approve(). May differ from the user's fieldsToEdit hint — admin
+  // has the authority to unlock only a subset. Empty array on a
+  // still-PENDING or REJECTED request; also empty on legacy rows
+  // that pre-date this column (older approvals unlocked the whole
+  // bucket by default).
+  approvedFields String[] @default([])
 
   status        EditRequestStatus @default(PENDING)
   reviewedById  String?
