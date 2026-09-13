@@ -366,6 +366,24 @@ export class PdfParserService {
 
     if (splitAt === words.length) return { merchant: body, location: null };
 
+    // Guard against over-eager splits — the biggest offender was rows
+    // like "Bex Pinetown Pinetown" ending up as merchant="Bex". If the
+    // proposed merchant is too short to be a real business name (< 4
+    // characters AND single-word), pull back one token so at least
+    // "Bex Pinetown" survives as the merchant. Real merchant names on
+    // SA cards are almost always 4+ characters or contain a modifier
+    // like "*", "-", or a number (e.g. "Dl *Uber", "Nmc3058").
+    const proposedMerchant = words.slice(0, splitAt).join(' ');
+    if (
+      proposedMerchant.length < 4 &&
+      !/[*\-\d]/.test(proposedMerchant) &&
+      splitAt < words.length
+    ) {
+      splitAt = Math.min(splitAt + 1, words.length);
+    }
+
+    if (splitAt === words.length) return { merchant: body, location: null };
+
     return {
       merchant: words.slice(0, splitAt).join(' '),
       location: words.slice(splitAt).join(' '),
