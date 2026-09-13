@@ -15,6 +15,7 @@ import { JwtUser, isPrivileged } from '../auth/role.enum';
 import {
   normaliseLast4,
   normaliseMaskedNumber,
+  normaliseCardholderName,
 } from '../cards/cards.service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -574,20 +575,72 @@ export class StatementsService {
     //
     // Normalise FIRST so the lookup matches existing cards even if the
     // statement formatting changed between months (extra whitespace,
-    // *-padded numbers, etc.). Without this, "  5678" wouldn't find a
-    // card stored as "5678" and we'd end up with a duplicate row.
+    // *-padded numbers, etc.).
     const normalisedLast4 = normaliseLast4(section.last4);
     const normalisedMasked =
       normaliseMaskedNumber(section.maskedNumber) ?? section.maskedNumber;
+    const normalisedName = normaliseCardholderName(section.cardholderName);
 
-    let card = normalisedLast4
-      ? await tx.card.findUnique({ where: { last4: normalisedLast4 } })
-      : null;
+    // Lookup priority — cardholder name is the primary identity, last4
+    // is the secondary signal. This fixes two real-world issues:
+    //   1. Same person's card gets re-issued with a different last4 →
+    //      we should still find their card (name match).
+    //   2. Multiple different cardholders happen to share a last4 →
+    //      we must NOT collapse them (name breaks the tie).
+    let card = null as
+      | Awaited<ReturnType<typeof tx.card.findFirst>>
+      | null;
 
-    // Belt-and-braces: if last4 didn't match, also try the masked
-    // number. Catches the case where last4 is missing/blank on the
-    // existing row but the masked number is identical.
-    if (!card && normalisedMasked) {
+    // (1) Best match: last4 AND cardholderName together.
+    if (normalisedLast4 && normalisedName) {
+      card = await tx.card.findFirst({
+        where: {
+          last4: normalisedLast4,
+          cardholderName: {
+            equals: section.cardholderName,
+            mode: 'insensitive',
+          },
+        },
+      });
+    }
+
+    // (2) Fall back to cardholderName alone (last4 rotated but the
+    //     person is the same). Only used when we can uniquely resolve.
+    if (!card && normalisedName) {
+      const nameMatches = await tx.card.findMany({
+        where: {
+          cardholderName: {
+            equals: section.cardholderName,
+            mode: 'insensitive',
+          },
+        },
+      });
+      if (nameMatches.length === 1) {
+        card = nameMatches[0];
+      }
+      // If multiple cards match this name (person has more than one
+      // card), we can't safely pick — fall through to creating a new
+      // one or matching by last4 below.
+    }
+
+    // (3) Legacy fallback: last4 alone. Only used when we can uniquely
+    //     resolve AND the existing card has no cardholder yet (so
+    //     we're filling in a previously-anonymous row).
+    if (!card && normalisedLast4) {
+      const last4Matches = await tx.card.findMany({
+        where: { last4: normalisedLast4 },
+      });
+      // Prefer the one with no cardholder (previously-orphaned card
+      // that this statement is filling in). Otherwise skip so we
+      // create a new one rather than reattaching to someone else's.
+      const orphan = last4Matches.find((c) => !c.cardholderName);
+      if (orphan) card = orphan;
+    }
+
+    // (4) Very last resort: maskedNumber. Rarely useful since two
+    //     cards from the same BIN share this, but doesn't hurt to
+    //     check for legacy rows that only have the masked number set.
+    if (!card && normalisedMasked && !normalisedLast4) {
       card = await tx.card.findFirst({
         where: { maskedNumber: normalisedMasked },
       });

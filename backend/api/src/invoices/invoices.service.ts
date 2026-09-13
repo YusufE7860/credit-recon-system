@@ -656,20 +656,40 @@ export class InvoicesService {
       currentUser.role === Role.UPLOADER &&
       invoice.uploaderId === currentUser.sub;
 
-    // Amounts (total / VAT / subtotal) are LOCKED for everyone, all
-    // the time. They must match what was on the original invoice or
-    // statement — no role, not even ADMIN, can edit them through the
-    // API. If the OCR captured them wrong, the workflow is delete +
-    // re-upload, not edit-in-place. Rejecting up-front means no
-    // client can sneak an amount change in through a manual PATCH.
-    if (
+    // Amounts (total / VAT / subtotal) can be corrected — but ONLY by
+    // ADMIN or the invoice's owner (the cardholder). UPLOADERs are
+    // still blocked; they're assistants, not authorised to alter
+    // financial figures. Every override is audit-logged with the
+    // before/after so any tampering leaves a trail.
+    const editingAmounts =
       input.total !== undefined ||
       input.vat !== undefined ||
-      input.subtotal !== undefined
-    ) {
-      throw new ForbiddenException(
-        'Invoice amounts (total, VAT, subtotal) cannot be edited. They must match the original invoice. If the OCR captured them incorrectly, delete the invoice and re-upload.',
-      );
+      input.subtotal !== undefined;
+    if (editingAmounts) {
+      if (currentUser.role === Role.UPLOADER) {
+        throw new ForbiddenException(
+          'Uploaders cannot edit invoice amounts. Ask the cardholder or an admin to make the correction.',
+        );
+      }
+      if (!isAdmin && !isOwner && !isReporting) {
+        throw new ForbiddenException(
+          'Only the invoice owner (cardholder) or an admin can edit amounts.',
+        );
+      }
+      // Sanity checks — no negative totals, VAT must be <= total.
+      if (input.total !== undefined && input.total < 0) {
+        throw new BadRequestException(
+          'Total must be zero or positive.',
+        );
+      }
+      if (input.vat !== undefined && input.vat < 0) {
+        throw new BadRequestException('VAT must be zero or positive.');
+      }
+      if (input.subtotal !== undefined && input.subtotal < 0) {
+        throw new BadRequestException(
+          'Subtotal must be zero or positive.',
+        );
+      }
     }
 
     // After amount-locking, "financials" here means the remaining
@@ -763,6 +783,58 @@ export class InvoicesService {
         });
       }
 
+      // When amount fields change, recompute totalZAR at the invoice's
+      // historical rate. If a new invoiceDate was also supplied use
+      // that (dates match order the accountant's mental model), else
+      // reuse the invoice's stored date.
+      let newTotalZAR: number | undefined;
+      let newExchangeRate: number | undefined;
+      if (input.total !== undefined) {
+        const effectiveDate = input.invoiceDate
+          ? new Date(input.invoiceDate)
+          : invoice.invoiceDate;
+        const { amount, rate } = await this.currency.toZARAtDate(
+          input.total,
+          invoice.currency,
+          effectiveDate,
+        );
+        newTotalZAR = amount;
+        newExchangeRate = rate;
+      }
+
+      // Audit the amount override — required for compliance since
+      // amounts used to be locked. Captures who, when, and the
+      // before/after for total/vat/subtotal.
+      if (editingAmounts) {
+        await this.prisma.auditLog.create({
+          data: {
+            actorId: currentUser.sub,
+            action: 'INVOICE_AMOUNT_OVERRIDE',
+            entityType: 'Invoice',
+            entityId: id,
+            metadata: {
+              supplier: invoice.supplier,
+              before: {
+                total: invoice.total,
+                vat: invoice.vat,
+                subtotal: invoice.subtotal,
+                totalZAR: invoice.totalZAR,
+              },
+              after: {
+                total: input.total ?? invoice.total,
+                vat: input.vat ?? invoice.vat,
+                subtotal: input.subtotal ?? invoice.subtotal,
+                totalZAR: newTotalZAR ?? invoice.totalZAR,
+              },
+              editorRole: currentUser.role,
+            },
+          },
+        });
+        this.logger.log(
+          `Invoice ${id} amounts overridden by ${currentUser.email} (${currentUser.role}) — total ${invoice.total} → ${input.total ?? invoice.total}`,
+        );
+      }
+
       return tx.invoice.update({
         where: { id },
         data: {
@@ -780,11 +852,18 @@ export class InvoicesService {
           invoiceDate: input.invoiceDate
             ? new Date(input.invoiceDate)
             : undefined,
-          // total / vat / subtotal are intentionally NOT in this set —
-          // they're rejected at the top of the method so they never
-          // reach the database.
-          // Clear requiresReview when the human edits supplier/number/date.
-          requiresReview: editingFinancials ? false : undefined,
+          // Amount overrides — nullable so callers can pass undefined
+          // to leave them untouched. Recomputed totalZAR flows through
+          // so downstream matching uses the corrected figure.
+          total: input.total,
+          vat: input.vat,
+          subtotal: input.subtotal,
+          totalZAR: newTotalZAR,
+          exchangeRate: newExchangeRate,
+          // Clear requiresReview when the human edits supplier/number/date
+          // OR when they correct amounts (both are OCR-correction actions).
+          requiresReview:
+            editingFinancials || editingAmounts ? false : undefined,
           // Clear the financial unlock when consumed (or when admin edits).
           editUnlockedUntil:
             consumesUnlock || (editingFinancials && isAdmin) ? null : undefined,

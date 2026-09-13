@@ -92,12 +92,12 @@ This input could be ANY of the following. Adapt accordingly:
 
 ## Universal rules
 
-- supplier: the actual issuing business. Strip noise like "Page 1 of 1", "Invoice", "Receipt", "Tax Invoice", and "Bill to" recipient names.
+- supplier: the actual issuing business — READ FROM THE LOGO OR HEADER at the top of the receipt. On thermal restaurant slips the store name is typically the big text or logo at the very top (e.g. "Mochachos", "Nando's", "Steers"). The branch/location is usually printed below it in smaller text (e.g. "Preller Square", "Sandton City"). Join them: "Mochachos Preller Square". Do NOT read supplier from customer names, cashier names, or receipt body text.
 - invoiceNumber: must contain at least one digit. Never return the words "number", "invoice", "receipt", "reference", "till", "cashier" themselves.
 - invoiceDate: convert anything (1 Apr 2026, April 1, 2026, 01/04/2026, 2026-04-01) to ISO YYYY-MM-DD. Prefer "Date of issue" / "Invoice date" / "Issued" / "Receipt date" over "Due date" / "Period" / "Valid until".
-- total: prefer "TOTAL DUE" > "GRAND TOTAL" > "AMOUNT DUE" > "TOTAL" > "AMOUNT PAID". Numeric only, no currency symbol.
+- total: THE FINAL AMOUNT PAID — the SINGLE largest figure at the BOTTOM of the receipt, usually labelled "TOTAL", "PAYMENT", "AMOUNT DUE", "AMOUNT PAID", "GRAND TOTAL", "CREDIT CARDS", "CARD PAYMENT" or "NET TOTAL". NEVER pick a per-item line amount (e.g. "1 MexStrp 79.90"). NEVER pick the subtotal or a mid-slip line. If both "SUBTOTAL" and "TOTAL" are present, TOTAL wins. If a line reads "TOTAL: 213.60" and another line reads "79.90", 213.60 is the answer. Numeric only, no currency symbol.
 - subtotal: amount before VAT. Null if the receipt only shows the inclusive total.
-- vat: the VAT/tax amount (a Rand value, not a percentage). Zero if no VAT shown. Null if uncertain.
+- vat: the VAT/tax amount (a Rand value, not a percentage). Zero if no VAT shown. Null if uncertain. On SA slips it's often labelled "VAT", "VAT TTL", "15% VAT", or "TAX".
 - currency: default ZAR ONLY when the receipt clearly looks South African (Rand symbol, .co.za supplier, ZA address). Otherwise infer from symbols/codes.
 - confidence: be honest.
   - 0.95+: clean digital invoice, all fields obvious.

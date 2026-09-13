@@ -344,6 +344,16 @@ export default function InvoiceDetailPage() {
         if (edits[k] !== invoice[k]) payload[k] = edits[k];
       }
     }
+    // Amount overrides — only sent when the user is permitted to edit
+    // them AND the value actually changed. Backend audits every change.
+    if (canEditAmounts) {
+      const amountFields = ['total', 'vat', 'subtotal'] as const;
+      for (const k of amountFields) {
+        if (edits[k] != null && edits[k] !== invoice[k]) {
+          payload[k] = edits[k];
+        }
+      }
+    }
 
     try {
       const updated = await api<Invoice>(`/invoices/${id}`, {
@@ -445,6 +455,16 @@ export default function InvoiceDetailPage() {
   // Financial fields are editable when either OCR flagged the invoice
   // for review, or an admin has approved an unlock request.
   const financialsLocked = !invoice.requiresReview && !unlockActive;
+
+  // Amount fields (Total / VAT) are editable by ADMIN or the invoice
+  // owner (the cardholder). UPLOADERs are still blocked (they never
+  // see money fields anyway — hideMoney handles that). Backend enforces
+  // the same rules and audits every change.
+  const canEditAmounts =
+    !hideMoney &&
+    (user?.role === 'ADMIN' ||
+      user?.role === 'REPORTING' ||
+      invoice.userId === user?.id);
 
   async function submitEditRequest(
     type: 'FINANCIAL' | 'METADATA' = 'FINANCIAL',
@@ -623,25 +643,31 @@ export default function InvoiceDetailPage() {
               {!hideMoney && (
                 <>
                   <div className="grid grid-cols-2 gap-3">
-                    {/* Amounts are LOCKED for everyone, no matter their
-                        role or any unlock state. They must match the
-                        original invoice. Backend rejects any PATCH that
-                        tries to change them — the readOnly here matches
-                        that contract. */}
+                    {/* Amounts editable by owner + admin so OCR
+                        misreads can be corrected. Every change is
+                        audit-logged on the backend with before/after
+                        values, so tampering leaves a trail. */}
                     <DetailField
                       label={`Total (${invoice.currency})`}
                       value={String(edits.total ?? 0)}
-                      readOnly
+                      onChange={(v) =>
+                        setEdits({ ...edits, total: Number(v) || 0 })
+                      }
+                      readOnly={!canEditAmounts}
                     />
                     <DetailField
                       label={`VAT (${invoice.currency})`}
                       value={String(edits.vat ?? 0)}
-                      readOnly
+                      onChange={(v) =>
+                        setEdits({ ...edits, vat: Number(v) || 0 })
+                      }
+                      readOnly={!canEditAmounts}
                     />
                   </div>
                   <p className="text-xs text-gray-500 -mt-2 mb-3">
-                    Amounts can&apos;t be edited — they must match the
-                    original invoice. If they&apos;re wrong, delete and re-upload.
+                    {canEditAmounts
+                      ? 'Correct OCR errors here. Every change is audit-logged.'
+                      : "Amounts must match the original invoice. Ask the cardholder or an admin to correct any OCR errors."}
                   </p>
                 </>
               )}

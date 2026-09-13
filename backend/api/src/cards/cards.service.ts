@@ -52,6 +52,26 @@ export function normaliseMaskedNumber(raw: string | null | undefined): string | 
   return cleaned.length > 0 ? cleaned : null;
 }
 
+// Cardholder names come in many shapes: "Muhammad G Rasool",
+// "MUHAMMAD RASOOL", "Muhammad  Gulam  Rasool". We compare a
+// canonical form (uppercase, collapsed whitespace, punctuation
+// stripped) so those all resolve to the same card. Real duplicates
+// still get caught; genuine different-name cases still get their own
+// card. Middle initials/names are kept — dropping them would collapse
+// "M Smith" and "M A Smith" together which would be wrong.
+export function normaliseCardholderName(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const cleaned = String(raw)
+    .toUpperCase()
+    // Strip anything that isn't letters, digits, or whitespace. Removes
+    // punctuation (dots after initials, commas after surnames) without
+    // touching the meaningful characters.
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
 @Injectable()
 export class CardsService {
   constructor(private prisma: PrismaService) {}
@@ -128,35 +148,48 @@ export class CardsService {
   }
 
   async createCard(data: CreateCardInput) {
-    // Normalise before storing so future dedup lookups (and the DB
-    // unique constraint on last4) compare apples to apples.
+    // Normalise before storing so future dedup lookups compare apples
+    // to apples.
     const last4 = normaliseLast4(data.last4 ?? null);
     const maskedNumber = normaliseMaskedNumber(data.maskedNumber);
+    const normalisedName = normaliseCardholderName(data.cardholderName);
     if (!maskedNumber) {
       throw new BadRequestException('maskedNumber is required');
     }
 
-    // Pre-check duplicates by last4 OR maskedNumber for a clean 409
-    // instead of letting Prisma's P2002 bubble out as a 500.
-    if (last4) {
-      const dupByLast4 = await this.prisma.card.findUnique({
-        where: { last4 },
+    // Duplicate check — the real identity is (cardholderName + last4).
+    // Two cards may share a last4 as long as they belong to different
+    // people. maskedNumber alone is NOT a duplicate signal any more
+    // because two cards from the same BIN naturally share it.
+    if (last4 && normalisedName) {
+      const dup = await this.prisma.card.findFirst({
+        where: {
+          last4,
+          cardholderName: {
+            equals: data.cardholderName ?? undefined,
+            mode: 'insensitive',
+          },
+        },
         select: { id: true, cardName: true },
       });
-      if (dupByLast4) {
+      if (dup) {
         throw new ConflictException(
-          `A card ending ${last4} already exists ("${dupByLast4.cardName}"). Edit it instead.`,
+          `A card ending ${last4} for that cardholder already exists ("${dup.cardName}"). Edit it instead.`,
         );
       }
-    }
-    const dupByMasked = await this.prisma.card.findFirst({
-      where: { maskedNumber },
-      select: { id: true, cardName: true },
-    });
-    if (dupByMasked) {
-      throw new ConflictException(
-        `A card with that masked number already exists ("${dupByMasked.cardName}"). Edit it instead.`,
-      );
+    } else if (last4) {
+      // No cardholder supplied — fall back to a straight last4 check
+      // so the admin at least gets a warning rather than silently
+      // creating an orphan.
+      const dup = await this.prisma.card.findFirst({
+        where: { last4, cardholderName: null },
+        select: { id: true, cardName: true },
+      });
+      if (dup) {
+        throw new ConflictException(
+          `An anonymous card ending ${last4} already exists ("${dup.cardName}"). Assign a cardholder to it or edit it.`,
+        );
+      }
     }
 
     return this.prisma.card.create({
@@ -169,28 +202,41 @@ export class CardsService {
   }
 
   async updateCard(id: string, data: UpdateCardInput) {
-    await this.getCardById(id); // internal call — no user check
+    const existing = await this.getCardById(id); // internal call — no user check
 
     // Same normalisation on update so admin edits can't reintroduce
-    // a near-duplicate by trailing whitespace etc.
+    // a near-duplicate via trailing whitespace / case differences.
     const next: UpdateCardInput = { ...data };
     if (data.last4 !== undefined) {
       next.last4 = normaliseLast4(data.last4) ?? undefined;
-      // Block collisions with another card.
-      if (next.last4) {
-        const collision = await this.prisma.card.findFirst({
-          where: { last4: next.last4, NOT: { id } },
-          select: { id: true, cardName: true },
-        });
-        if (collision) {
-          throw new ConflictException(
-            `Another card already ends ${next.last4} ("${collision.cardName}").`,
-          );
-        }
-      }
     }
     if (data.maskedNumber !== undefined) {
       next.maskedNumber = normaliseMaskedNumber(data.maskedNumber) ?? undefined;
+    }
+
+    // Collision check uses (last4 + cardholderName) — the composite
+    // identity. If either changed, we compare the resulting pair
+    // against every other card. Same-last4 different-name is fine;
+    // same-last4 same-name is the actual duplicate we block.
+    const effectiveLast4 = next.last4 ?? existing.last4;
+    const effectiveName =
+      data.cardholderName !== undefined
+        ? data.cardholderName
+        : existing.cardholderName;
+    if (effectiveLast4 && effectiveName) {
+      const collision = await this.prisma.card.findFirst({
+        where: {
+          last4: effectiveLast4,
+          cardholderName: { equals: effectiveName, mode: 'insensitive' },
+          NOT: { id },
+        },
+        select: { id: true, cardName: true },
+      });
+      if (collision) {
+        throw new ConflictException(
+          `Another card ends ${effectiveLast4} for that cardholder ("${collision.cardName}").`,
+        );
+      }
     }
     return this.prisma.card.update({ where: { id }, data: next });
   }

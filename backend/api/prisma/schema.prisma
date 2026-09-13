@@ -114,7 +114,11 @@ model Card {
   cardName       String              // user-defined label, e.g. "Marketing Visa"
   cardholderName String?             // name printed on the card (from statement)
   maskedNumber   String              // e.g. "4228 24** **** 7005"
-  last4          String?  @unique    // indexed for fast lookup during statement import
+  // Last 4 digits — INDEXED, but NOT unique. Multiple cards can share
+  // the same last4 (statements sometimes reuse tail digits across
+  // different cardholders after a re-issue). The real identity is
+  // (last4 + cardholderName), enforced in the service layer.
+  last4          String?
   assignedUserId String?
   // Card's credit limit in ZAR. Used by the live-spend tracker on the
   // dashboard to compare against invoices uploaded since the last
@@ -124,6 +128,9 @@ model Card {
   // line can be parsed from the card section; admin can override.
   creditLimit    Float?
   createdAt      DateTime @default(now())
+
+  @@index([last4])
+  @@index([cardholderName])
 }
 
 // A line item from a credit card statement (what the bank says you spent).
