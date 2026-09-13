@@ -291,11 +291,33 @@ export class PdfParserService {
     const cleanedBody = this.stripTrailingReference(body);
 
     // After stripping, if the merchant body has no letters left, the
-    // row is pure parser noise (a Loc-column-only line that the regex
-    // matched by accident). Drop it — better to miss a transaction
-    // than create a phantom one with no merchant.
+    // row is one of two things:
+    //   (a) Parser noise — a Loc-column-only fragment that the regex
+    //       matched by accident. Drop these.
+    //   (b) A real transaction with only a reference number and no
+    //       merchant name (some FNB card sections have these — a card
+    //       fee, a mobile-recharge reference, an unspecified merchant).
+    //       These have a valid date + valid amount, so we keep them
+    //       with "Unknown merchant" as a placeholder rather than
+    //       dropping the money. Accountant can rename later.
     const letterCount = (cleanedBody.match(/[A-Za-z]/g) ?? []).length;
-    if (letterCount < 2) return null;
+    if (letterCount < 2) {
+      // Salvage as an "Unknown merchant" row using whatever digits
+      // survived (the reference number, if any) as the description so
+      // it can be identified in the statement later.
+      const ref = body.replace(/\s+/g, ' ').trim();
+      const rawAmount = this.parseAmount(amountStr) ?? 0;
+      const signedAmount = crFlag ? -Math.abs(rawAmount) : rawAmount;
+      // Genuinely empty rows (no digits at all) still get dropped.
+      if (!ref || rawAmount === 0) return null;
+      return {
+        date,
+        merchant: 'Unknown merchant',
+        location: ref.length > 0 ? ref : null,
+        amount: signedAmount,
+        isFee: false,
+      };
+    }
 
     const { merchant, location } = this.splitMerchantLocation(cleanedBody);
 
