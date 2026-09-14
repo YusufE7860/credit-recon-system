@@ -422,17 +422,19 @@ export default function Dashboard() {
                   const pct = Math.min(100, (used / limit) * 100);
                   const over = c.liveSpend > limit;
                   const near = pct >= 80 && !over;
-                  return (
-                    <div
-                      key={c.cardId}
-                      className={`rounded-lg border p-3 ${
-                        over
-                          ? 'border-red-300 bg-red-50'
-                          : near
-                          ? 'border-orange-300 bg-orange-50'
-                          : 'border-gray-200'
-                      }`}
-                    >
+                  // For admins/reporting the card is clickable — opens
+                  // the assigned user's profile page. Non-admins get a
+                  // static div.
+                  const clickable = isPrivileged && !!c.assignedUserId;
+                  const cardClass = `rounded-lg border p-3 block ${
+                    over
+                      ? 'border-red-300 bg-red-50'
+                      : near
+                      ? 'border-orange-300 bg-orange-50'
+                      : 'border-gray-200'
+                  } ${clickable ? 'hover:shadow-md hover:border-gray-300 transition cursor-pointer' : ''}`;
+                  const inner = (
+                    <>
                       <div className="flex justify-between items-start">
                         <p className="text-sm font-medium truncate">
                           {c.cardName}
@@ -478,6 +480,19 @@ export default function Dashboard() {
                           </span>
                         )}
                       </p>
+                    </>
+                  );
+                  return clickable ? (
+                    <Link
+                      key={c.cardId}
+                      href={`/admin/users/${c.assignedUserId}/profile`}
+                      className={cardClass}
+                    >
+                      {inner}
+                    </Link>
+                  ) : (
+                    <div key={c.cardId} className={cardClass}>
+                      {inner}
                     </div>
                   );
                 })}
