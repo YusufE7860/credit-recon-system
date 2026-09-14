@@ -136,6 +136,10 @@ export interface ListInvoiceFilters {
   // Name kept as `uploaderId` for backward compatibility with old
   // bookmarks; the semantic is now broader than just uploader.
   uploaderId?: string;
+  // Date-range filter on invoiceDate. Half-open at the top so the caller
+  // can pass a plain YYYY-MM-DD for both bounds.
+  from?: string;
+  to?: string;
 }
 
 @Injectable()
@@ -180,6 +184,17 @@ export class InvoicesService {
       };
     }
 
+    // Optional date-range on invoiceDate. Half-open on the upper end.
+    const dateFilter: { gte?: Date; lt?: Date } = {};
+    if (filters.from) dateFilter.gte = new Date(filters.from);
+    if (filters.to) {
+      const t = new Date(filters.to);
+      t.setDate(t.getDate() + 1);
+      dateFilter.lt = t;
+    }
+    const invoiceDate =
+      dateFilter.gte || dateFilter.lt ? dateFilter : undefined;
+
     return this.prisma.invoice.findMany({
       where: {
         status: filters.status,
@@ -187,6 +202,7 @@ export class InvoicesService {
         supplier: filters.supplier
           ? { contains: filters.supplier, mode: 'insensitive' }
           : undefined,
+        invoiceDate,
         ...scopeFilter,
       },
       orderBy: { createdAt: 'desc' },

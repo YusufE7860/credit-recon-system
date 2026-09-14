@@ -301,6 +301,50 @@ export default function UserProfilePage() {
           </div>
         </div>
 
+        {/* Reports — printable views for the current period. Each opens
+            a print-optimised page in a new tab; the browser's print dialog
+            fires automatically so the admin can save to PDF or print. */}
+        {from && to && (
+          <section className="bg-white rounded-xl shadow p-4">
+            <h2 className="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-3">
+              Printable reports
+            </h2>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href={`/admin/users/${userId}/report?type=summary&from=${from}&to=${to}`}
+                target="_blank"
+                className="px-3 py-1.5 text-sm rounded-lg bg-orange-600 text-white hover:bg-orange-700"
+              >
+                Period summary
+              </Link>
+              <Link
+                href={`/admin/users/${userId}/report?type=transactions&from=${from}&to=${to}`}
+                target="_blank"
+                className="px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
+              >
+                Transactions list
+              </Link>
+              <Link
+                href={`/admin/users/${userId}/report?type=invoices&from=${from}&to=${to}`}
+                target="_blank"
+                className="px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
+              >
+                Invoices list
+              </Link>
+              <Link
+                href={`/admin/users/${userId}/report?type=unmatched&from=${from}&to=${to}`}
+                target="_blank"
+                className="px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50"
+              >
+                Unmatched transactions
+              </Link>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Reports open in a new tab and are optimised for print / save-as-PDF.
+            </p>
+          </section>
+        )}
+
         {/* Assigned cards + live-spend progress. Empty state when the
             user has no cards assigned. */}
         <section className="bg-white rounded-xl shadow p-4">
@@ -368,11 +412,15 @@ export default function UserProfilePage() {
                 Current period vs previous
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {/* Each card drills into the underlying data for THIS
+                    user, filtered to the current period. Query params
+                    match what the target page reads on mount. */}
                 <StatCard
                   label="Net spend"
                   value={fmtZAR(current.netSpend)}
                   prevLabel={`prev: ${fmtZAR(previous.netSpend)}`}
                   delta={deltaPct(current.netSpend, previous.netSpend)}
+                  href={`/transactions?userId=${userId}&from=${from}&to=${to}`}
                 />
                 <StatCard
                   label="Transactions"
@@ -382,6 +430,7 @@ export default function UserProfilePage() {
                     current.totalTransactions,
                     previous.totalTransactions,
                   )}
+                  href={`/transactions?userId=${userId}&from=${from}&to=${to}`}
                 />
                 <StatCard
                   label="Invoices uploaded"
@@ -391,12 +440,14 @@ export default function UserProfilePage() {
                     current.totalInvoices,
                     previous.totalInvoices,
                   )}
+                  href={`/invoices?userId=${userId}&from=${from}&to=${to}`}
                 />
                 <StatCard
                   label="Matched rate"
                   value={`${(current.recon.matchedRate * 100).toFixed(0)}%`}
                   prevLabel={`prev: ${(previous.recon.matchedRate * 100).toFixed(0)}%`}
                   delta={null}
+                  href={`/invoices?userId=${userId}&from=${from}&to=${to}&status=MATCHED`}
                 />
               </div>
             </section>
@@ -508,19 +559,23 @@ export default function UserProfilePage() {
 }
 
 // A single stat card. `delta` renders a small ▲/▼ chip in red/green.
+// When `href` is supplied, the whole card becomes a clickable link that
+// drills into the underlying data for this user + period.
 function StatCard({
   label,
   value,
   prevLabel,
   delta,
+  href,
 }: {
   label: string;
   value: string;
   prevLabel: string;
   delta: { pct: number; up: boolean } | null;
+  href?: string;
 }) {
-  return (
-    <div className="bg-white rounded-xl shadow p-4">
+  const body = (
+    <>
       <p className="text-xs text-gray-600 uppercase tracking-wider">{label}</p>
       <p className="text-xl font-bold mt-1">{value}</p>
       <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
@@ -537,7 +592,23 @@ function StatCard({
           </span>
         )}
       </div>
-    </div>
+      {href && (
+        <p className="text-[10px] uppercase tracking-wider text-orange-600 mt-2">
+          View →
+        </p>
+      )}
+    </>
+  );
+  const baseClass = 'bg-white rounded-xl shadow p-4 block';
+  return href ? (
+    <Link
+      href={href}
+      className={`${baseClass} hover:shadow-md hover:ring-1 hover:ring-orange-300 transition cursor-pointer`}
+    >
+      {body}
+    </Link>
+  ) : (
+    <div className={baseClass}>{body}</div>
   );
 }
 

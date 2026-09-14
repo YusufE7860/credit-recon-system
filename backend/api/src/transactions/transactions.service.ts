@@ -19,6 +19,8 @@ const USER_PUBLIC_SELECT = {
 
 export interface TransactionFilters {
   userId?: string;
+  from?: string; // YYYY-MM-DD inclusive
+  to?: string;   // YYYY-MM-DD inclusive
 }
 
 // Editable fields for admin transaction correction.
@@ -111,8 +113,21 @@ export class TransactionsService {
       ? filters.userId
       : currentUser.sub;
 
+    // Optional date-range filter. Half-open on the upper end so the caller
+    // can pass a plain YYYY-MM-DD without worrying about missing the last day.
+    const dateFilter: { gte?: Date; lt?: Date } = {};
+    if (filters.from) dateFilter.gte = new Date(filters.from);
+    if (filters.to) {
+      const t = new Date(filters.to);
+      t.setDate(t.getDate() + 1);
+      dateFilter.lt = t;
+    }
+    const where: any = {};
+    if (effectiveUserId) where.userId = effectiveUserId;
+    if (dateFilter.gte || dateFilter.lt) where.transactionDate = dateFilter;
+
     const transactions = await this.prisma.transaction.findMany({
-      where: effectiveUserId ? { userId: effectiveUserId } : undefined,
+      where: Object.keys(where).length > 0 ? where : undefined,
       orderBy: { transactionDate: 'desc' },
       // Pull all matched invoices (plural — split-receipt support) so the
       // frontend can render a side-by-side "statement vs invoice" view

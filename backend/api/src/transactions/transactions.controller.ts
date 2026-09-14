@@ -37,10 +37,12 @@ export class TransactionsController {
   findAll(
     @CurrentUser() user: JwtUser,
     @Query('userId') userId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     // Service enforces RBAC — non-privileged callers can't actually
     // pass a different userId, even if they try.
-    return this.transactionsService.getTransactions(user, { userId });
+    return this.transactionsService.getTransactions(user, { userId, from, to });
   }
 
   @Get(':id')

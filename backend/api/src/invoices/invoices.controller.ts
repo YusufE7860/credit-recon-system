@@ -60,6 +60,9 @@ export class InvoicesController {
     @Query('supplier') supplier?: string,
     @Query('requiresReview') requiresReview?: string,
     @Query('uploaderId') uploaderId?: string,
+    @Query('userId') userId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.invoicesService.list(
       {
@@ -69,7 +72,12 @@ export class InvoicesController {
           requiresReview === undefined
             ? undefined
             : requiresReview === 'true',
-        uploaderId,
+        // Both `uploaderId` and `userId` map to the same "person filter"
+        // — the service treats it as owner-OR-uploader. `userId` is the
+        // clearer name; `uploaderId` kept for backward compatibility.
+        uploaderId: uploaderId ?? userId,
+        from,
+        to,
       },
       user,
     );
