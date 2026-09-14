@@ -490,6 +490,49 @@ export class StatementsService {
       `PDF statement import: ${parsed.cards.length} cards, ${totalImported} txns imported, ${totalSkipped} skipped`,
     );
 
+    // Account-level residual. The bank's "Transactions" figure on page 1
+    // includes VAT on Fees, interest, admin charges and other things
+    // that live OUTSIDE the per-card transaction tables. We create a
+    // synthetic transaction for the difference so the dashboard total
+    // matches the statement exactly. Only fires when we can read the
+    // bank's stated total AND the residual is more than R 1 (avoids
+    // floating-point noise creating spurious R 0.01 rows).
+    if (parsed.bankStatedTotal != null) {
+      const parsedNet = await this.prisma.transaction.aggregate({
+        _sum: { amount: true },
+        where: { statementId: statement.id },
+      });
+      const capturedNet = parsedNet._sum.amount ?? 0;
+      const residual = parsed.bankStatedTotal - capturedNet;
+      if (Math.abs(residual) > 1) {
+        await this.prisma.transaction.create({
+          data: {
+            merchant: 'Account-level fees',
+            description:
+              'Bank-imposed charges (VAT on fees, interest, currency conversion, admin) that live outside individual card sections on the statement.',
+            amount: residual,
+            transactionDate: statement.periodEnd ?? new Date(),
+            category: 'Bank Charges - FNB',
+            statementId: statement.id,
+            status: 'POSTED',
+            // No card owner — this is an account-level charge. Fees
+            // don't need a matching invoice and shouldn't show as
+            // "unmatched" needing attention.
+            noMatchRequired: true,
+            matched: true,
+            userId: uploaderId,
+          },
+        });
+        this.logger.log(
+          `Statement ${statement.id}: created Account-level fees row for R ${residual.toFixed(2)} residual (statement ${parsed.bankStatedTotal} - captured ${capturedNet.toFixed(2)})`,
+        );
+      } else {
+        this.logger.log(
+          `Statement ${statement.id}: net matches bank stated total exactly (${parsed.bankStatedTotal.toFixed(2)})`,
+        );
+      }
+    }
+
     // Auto-run reconciliation across the statement's period. Critical
     // for the multi-card case: each card belongs to a different user,
     // and they've been uploading receipts all month waiting for the

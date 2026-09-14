@@ -25,6 +25,12 @@ export interface ParsedStatement {
   statementDate: Date | null;     // header date — used for the year context
   parentAccount: string | null;   // e.g. "8812 7100 5898 3003"
   cards: ParsedCardSection[];
+  // Bank's own "Transactions" total from page 1 of the statement.
+  // We compare this against the sum of parsed card transactions and
+  // create a synthetic "Account-level fees" transaction for the
+  // residual (VAT on Fees, interest, etc. that live outside any
+  // card section). Nullable when the parser couldn't find the line.
+  bankStatedTotal: number | null;
   rawTextLength: number;
   warnings: string[];
 }
@@ -228,13 +234,38 @@ export class PdfParserService {
       `Parsed PDF: ${cards.length} cards, ${cards.reduce((n, c) => n + c.transactions.length, 0)} total transactions`,
     );
 
+    // Extract the bank's own "Transactions" total from the summary
+    // page. Format: "Transactions   959 914.06" (may include the
+    // "Cr" suffix if credit balance). Nullable when not found.
+    const bankStatedTotal = this.extractBankStatedTotal(text);
+
     return {
       statementDate,
       parentAccount,
       cards,
+      bankStatedTotal,
       rawTextLength: text.length,
       warnings,
     };
+  }
+
+  // Parse the "Transactions X XXX.XX" summary line from page 1 — the
+  // bank's own net figure for the cycle, used to reconcile the parser
+  // output against the source. Multiple formats accepted:
+  //   "Transactions   959 914.06"
+  //   "Transactions   959,914.06"
+  //   "Transactions   5 000.00 Cr"   (net credit balance — negative)
+  private extractBankStatedTotal(text: string): number | null {
+    // Anchor on "Transactions" as a standalone token followed by a
+    // number. Avoid matching lines like "Transaction Details" or
+    // "Business Statement". Require line-start (or lots of whitespace).
+    const re = /(?:^|\n)\s*Transactions\s+([\d\s,]+\.\d{2})(\s*Cr)?/;
+    const match = re.exec(text);
+    if (!match) return null;
+    const raw = match[1].replace(/[\s,]/g, '');
+    const value = parseFloat(raw);
+    if (isNaN(value)) return null;
+    return match[2] ? -value : value;
   }
 
   // ---------- Helpers ----------
