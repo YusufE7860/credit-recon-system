@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 import { api, ApiError } from '@/lib/api';
 import { useCurrentUser, isPrivileged } from '@/lib/user-context';
@@ -59,9 +60,20 @@ export default function TransactionsPage() {
   const privileged = isPrivileged(currentUser?.role);
   const isAdmin = currentUser?.role === 'ADMIN';
 
+  // Read initial filters from URL so the profile-page drill-through
+  // ("View all of Rehan's transactions in this period") lands with
+  // the right scope pre-applied. Once loaded, the user can still
+  // change the dropdown / dates freely — URL is just the entry point.
+  const search = useSearchParams();
+  const initialUserId = search?.get('userId') ?? '';
+  const initialFrom = search?.get('from') ?? '';
+  const initialTo = search?.get('to') ?? '';
+
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
-  const [filterUserId, setFilterUserId] = useState<string>('');
+  const [filterUserId, setFilterUserId] = useState<string>(initialUserId);
+  const [filterFrom, setFilterFrom] = useState<string>(initialFrom);
+  const [filterTo, setFilterTo] = useState<string>(initialTo);
   // Match-status filter — visible to all users. 'all' is the default;
   // 'matched' / 'unmatched' narrow the view. Bank-fee rows (which
   // never need an invoice) are always excluded from the "unmatched"
@@ -124,13 +136,17 @@ export default function TransactionsPage() {
     }
   }
 
-  // Build the URL with optional ?userId=... when the admin filters.
+  // Build the URL with optional ?userId=... / ?from=... / ?to=...
+  // Backend enforces RBAC on userId — a non-privileged caller passing
+  // someone else's id is silently ignored (rescoped to themselves).
   async function fetchTransactions() {
     setLoading(true);
     setError('');
     try {
       const params = new URLSearchParams();
       if (filterUserId) params.set('userId', filterUserId);
+      if (filterFrom) params.set('from', filterFrom);
+      if (filterTo) params.set('to', filterTo);
       const qs = params.toString();
       const data = await api<Transaction[]>(
         `/transactions${qs ? '?' + qs : ''}`,
@@ -157,7 +173,7 @@ export default function TransactionsPage() {
   useEffect(() => {
     fetchTransactions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterUserId]);
+  }, [filterUserId, filterFrom, filterTo]);
 
   useEffect(() => {
     if (privileged) fetchUsersForFilter();
@@ -245,34 +261,61 @@ export default function TransactionsPage() {
           })}
         </div>
 
-        {/* Admin-only filter bar */}
-        {privileged && (
-          <div className="bg-white rounded-xl shadow p-4 mb-6 flex items-center gap-3">
-            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
-              Filter by user:
-            </label>
-            <select
-              value={filterUserId}
-              onChange={(e) => setFilterUserId(e.target.value)}
-              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
-            >
-              <option value="">All users</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} ({u.email})
-                </option>
-              ))}
-            </select>
-            {filterUserId && (
-              <button
-                onClick={() => setFilterUserId('')}
-                className="text-sm text-gray-600 hover:text-black"
+        {/* Filter bar. User dropdown is admin/reporting-only; date range
+            is available to everyone so any user can narrow their own
+            view to a period. When the page was opened from a profile
+            drill-through the URL params pre-fill these fields. */}
+        <div className="bg-white rounded-xl shadow p-4 mb-6 flex flex-wrap items-center gap-3">
+          {privileged && (
+            <>
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+                User:
+              </label>
+              <select
+                value={filterUserId}
+                onChange={(e) => setFilterUserId(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500 min-w-[220px]"
               >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
+                <option value="">All users</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({u.email})
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+          <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+            From:
+          </label>
+          <input
+            type="date"
+            value={filterFrom}
+            onChange={(e) => setFilterFrom(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
+          />
+          <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+            To:
+          </label>
+          <input
+            type="date"
+            value={filterTo}
+            onChange={(e) => setFilterTo(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
+          />
+          {(filterUserId || filterFrom || filterTo) && (
+            <button
+              onClick={() => {
+                setFilterUserId('');
+                setFilterFrom('');
+                setFilterTo('');
+              }}
+              className="text-sm text-gray-600 hover:text-black"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
 
         {error && (
           <p className="text-sm text-red-600 bg-red-50 p-3 rounded mb-4">

@@ -258,10 +258,13 @@ export class DashboardService {
       ? await this.computeScopedReconStats(effectiveUserId, from, to)
       : await this.computeOrgReconStatsInRange(from, to);
 
-    // Monthly spend. We keep returning the full history for the trend
-    // chart — that's independent of the period filter, the line just
-    // gets a marker on the selected window.
-    const byMonthRaw = scopedToSelf
+    // Monthly spend trend. Returns the FULL history for the picked
+    // scope — independent of the [from, to] filter, so the line chart
+    // still shows the surrounding months for context. The scope key
+    // (`effectiveUserId`) is the same one used for the period totals,
+    // so an admin drilling into a specific user's profile gets that
+    // user's trend, not the org-wide numbers.
+    const byMonthRaw = effectiveUserId
       ? await this.prisma.$queryRaw<
           Array<{ month: Date; total: number; count: bigint }>
         >`
@@ -270,7 +273,7 @@ export class DashboardService {
             SUM(amount)::float AS total,
             COUNT(*)::bigint AS count
           FROM "Transaction"
-          WHERE amount > 0 AND "userId" = ${currentUser.sub}
+          WHERE amount > 0 AND "userId" = ${effectiveUserId}
           GROUP BY month
           ORDER BY month ASC
         `

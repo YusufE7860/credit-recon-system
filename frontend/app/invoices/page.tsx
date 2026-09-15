@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -40,6 +41,11 @@ type Filters = {
   requiresReview: '' | 'true' | 'false';
   // Empty = "all uploaders". Privileged role only.
   uploaderId: string;
+  // Date-range on invoiceDate. Applied to everyone (users just filter
+  // themselves within these dates). Pre-populated from URL when the
+  // profile page drills through.
+  from: string;
+  to: string;
 };
 
 type UnmatchedCandidate = {
@@ -127,11 +133,17 @@ export default function InvoicesPage() {
       setMatchBusyId(null);
     }
   }
+  // Seed the filter state from URL query params. Backwards-compatible:
+  // `uploaderId` and `userId` both map to the same "person filter" —
+  // the backend treats it as owner-OR-uploader.
+  const search = useSearchParams();
   const [filters, setFilters] = useState<Filters>({
-    status: '',
+    status: search?.get('status') ?? '',
     supplier: '',
     requiresReview: '',
-    uploaderId: '',
+    uploaderId: search?.get('userId') ?? search?.get('uploaderId') ?? '',
+    from: search?.get('from') ?? '',
+    to: search?.get('to') ?? '',
   });
 
   // List of every user the admin might want to filter by. Only loaded
@@ -155,6 +167,8 @@ export default function InvoicesPage() {
         params.set('requiresReview', filters.requiresReview);
       if (filters.uploaderId)
         params.set('uploaderId', filters.uploaderId);
+      if (filters.from) params.set('from', filters.from);
+      if (filters.to) params.set('to', filters.to);
 
       const data = await api<Invoice[]>(`/invoices?${params.toString()}`);
       setInvoices(data);
@@ -174,6 +188,8 @@ export default function InvoicesPage() {
     filters.supplier,
     filters.requiresReview,
     filters.uploaderId,
+    filters.from,
+    filters.to,
   ]);
 
   return (
@@ -259,6 +275,53 @@ export default function InvoicesPage() {
                 </option>
               ))}
             </select>
+          )}
+        </div>
+
+        {/* Second row: date range + clear. Kept below the primary filters
+            so the top row stays tidy. When the profile page drills into
+            here the URL pre-fills From/To so the user sees the correct
+            period immediately. */}
+        <div className="bg-white rounded-xl shadow p-3 mb-6 flex flex-wrap items-center gap-3">
+          <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+            From:
+          </label>
+          <input
+            type="date"
+            value={filters.from}
+            onChange={(e) => setFilters({ ...filters, from: e.target.value })}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
+          />
+          <label className="text-sm font-medium text-gray-700 whitespace-nowrap">
+            To:
+          </label>
+          <input
+            type="date"
+            value={filters.to}
+            onChange={(e) => setFilters({ ...filters, to: e.target.value })}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
+          />
+          {(filters.from ||
+            filters.to ||
+            filters.uploaderId ||
+            filters.status ||
+            filters.supplier ||
+            filters.requiresReview) && (
+            <button
+              onClick={() =>
+                setFilters({
+                  status: '',
+                  supplier: '',
+                  requiresReview: '',
+                  uploaderId: '',
+                  from: '',
+                  to: '',
+                })
+              }
+              className="text-sm text-gray-600 hover:text-black ml-auto"
+            >
+              Clear all filters
+            </button>
           )}
         </div>
 
