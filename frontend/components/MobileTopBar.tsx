@@ -84,7 +84,7 @@ export default function MobileTopBar() {
 
   return (
     <header
-      className="md:hidden sticky top-0 z-30 bg-surface border-b border-border backdrop-blur-md supports-[backdrop-filter]:bg-surface/85"
+      className="md:hidden print:hidden sticky top-0 z-30 bg-surface border-b border-border backdrop-blur-md supports-[backdrop-filter]:bg-surface/85"
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
       <div className="flex items-center justify-between px-4 py-2.5">

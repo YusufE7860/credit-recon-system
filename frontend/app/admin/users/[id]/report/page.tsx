@@ -154,14 +154,32 @@ function UserReportPage() {
     };
   }, [userId, type, from, to, isAdminLike]);
 
-  // Once data is loaded, pop the print dialog. Short delay so the DOM
-  // has actually rendered before the browser snapshots for print.
+  // Once data is loaded, set document.title (browsers use it as the
+  // suggested save-as filename), then pop the print dialog. Title is
+  // restored on unmount so the app-wide title returns.
   useEffect(() => {
-    if (!loading && !error && profile) {
-      const t = setTimeout(() => window.print(), 400);
-      return () => clearTimeout(t);
-    }
-  }, [loading, error, profile]);
+    if (loading || error || !profile) return;
+    const reportName =
+      type === 'summary'
+        ? 'Summary'
+        : type === 'transactions'
+          ? 'Transactions'
+          : type === 'invoices'
+            ? 'Invoices'
+            : 'Unmatched';
+    // Filename shape: "Husain Essack - Summary - 2026-05-09 to 2026-08-26"
+    // Slug: strip anything the OS may object to (slashes especially).
+    const slug = (s: string) =>
+      s.replace(/[\\/:*?"<>|]/g, '').trim();
+    const filename = `${slug(profile.name)} - ${reportName} - ${from} to ${to}`;
+    const prev = document.title;
+    document.title = filename;
+    const t = setTimeout(() => window.print(), 400);
+    return () => {
+      clearTimeout(t);
+      document.title = prev;
+    };
+  }, [loading, error, profile, type, from, to]);
 
   if (!isAdminLike) {
     return (

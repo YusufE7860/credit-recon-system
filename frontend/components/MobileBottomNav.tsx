@@ -55,7 +55,7 @@ export default function MobileBottomNav() {
       // Fixed to viewport bottom. The pb-safe utility doesn't exist in
       // base Tailwind so we use env(safe-area-inset-bottom) inline to
       // stay above iPhone's home indicator bar.
-      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-border shadow-[0_-2px_8px_rgba(0,0,0,0.04)] backdrop-blur-md supports-[backdrop-filter]:bg-surface/90"
+      className="md:hidden print:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-border shadow-[0_-2px_8px_rgba(0,0,0,0.04)] backdrop-blur-md supports-[backdrop-filter]:bg-surface/90"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       aria-label="Primary navigation"
     >
