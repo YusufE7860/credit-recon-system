@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
@@ -70,7 +70,17 @@ type UnmatchedCandidate = {
   }>;
 };
 
-export default function InvoicesPage() {
+// Wrapper: useSearchParams() forces this page out of static
+// prerendering, and Next requires a Suspense boundary around it.
+export default function InvoicesPageWrapper() {
+  return (
+    <Suspense fallback={null}>
+      <InvoicesPage />
+    </Suspense>
+  );
+}
+
+function InvoicesPage() {
   const { user } = useCurrentUser();
   // UPLOADERs see invoices they uploaded but no monetary figures —
   // their job ends at "did the upload succeed?". Drop the Total

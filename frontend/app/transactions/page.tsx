@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 import { api, ApiError } from '@/lib/api';
@@ -55,7 +55,17 @@ type UserOption = {
   email: string;
 };
 
-export default function TransactionsPage() {
+// Suspense wrapper — useSearchParams() forces client-side rendering
+// and Next requires a boundary around it at prerender time.
+export default function TransactionsPageWrapper() {
+  return (
+    <Suspense fallback={null}>
+      <TransactionsPage />
+    </Suspense>
+  );
+}
+
+function TransactionsPage() {
   const { user: currentUser } = useCurrentUser();
   const privileged = isPrivileged(currentUser?.role);
   const isAdmin = currentUser?.role === 'ADMIN';

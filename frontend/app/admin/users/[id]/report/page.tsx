@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { useCurrentUser } from '@/lib/user-context';
@@ -82,7 +82,16 @@ function fmtDate(s: string | null): string {
   return new Date(s).toLocaleDateString('en-ZA');
 }
 
-export default function UserReportPage() {
+// Suspense wrapper — useSearchParams() requires this at prerender time.
+export default function UserReportPageWrapper() {
+  return (
+    <Suspense fallback={null}>
+      <UserReportPage />
+    </Suspense>
+  );
+}
+
+function UserReportPage() {
   const params = useParams<{ id: string }>();
   const userId = params?.id;
   const search = useSearchParams();
