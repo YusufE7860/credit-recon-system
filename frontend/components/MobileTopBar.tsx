@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { logoutUser } from '@/lib/auth';
 import { useCurrentUser, type Role } from '@/lib/user-context';
 import NotificationBell from './NotificationBell';
+import ThemeToggle from './ui/ThemeToggle';
 
 // Solid top bar for mobile, replacing the floating hamburger pattern.
 // Holds the brand on the left and a profile chip + notification bell on
@@ -31,13 +32,7 @@ const MENU_ENTRIES: MenuEntry[] = [
   { label: 'Settings', href: '/admin/settings', roles: ['ADMIN'] },
 ];
 
-function initialsFor(name: string | undefined): string {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
+import { initialsFor } from '@/lib/format';
 
 export default function MobileTopBar() {
   const pathname = usePathname();
@@ -89,7 +84,7 @@ export default function MobileTopBar() {
 
   return (
     <header
-      className="md:hidden sticky top-0 z-30 bg-white border-b border-gray-200"
+      className="md:hidden sticky top-0 z-30 bg-surface border-b border-border backdrop-blur-md supports-[backdrop-filter]:bg-surface/85"
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
       <div className="flex items-center justify-between px-4 py-2.5">
@@ -114,23 +109,23 @@ export default function MobileTopBar() {
               initials inside a coloured circle plus a chevron. */}
           <button
             onClick={() => setMenuOpen((v) => !v)}
-            className="flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-full border border-gray-200 active:bg-gray-50"
+            className="flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-full border border-border active:bg-surface-2"
             aria-label="Open profile menu"
             aria-expanded={menuOpen}
           >
-            <span className="w-8 h-8 rounded-full bg-orange-500 text-white flex items-center justify-center text-xs font-semibold">
+            <span className="w-8 h-8 rounded-full bg-brand text-brand-fg flex items-center justify-center text-xs font-semibold">
               {initialsFor(user?.name)}
             </span>
             <ChevronDown />
           </button>
 
           {menuOpen && (
-            <div className="absolute right-3 top-full mt-1 w-60 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
+            <div className="absolute right-3 top-full mt-1 w-64 bg-surface border border-border rounded-xl shadow-lg overflow-hidden">
               {user && (
-                <div className="px-3 py-2.5 border-b border-gray-100">
-                  <p className="text-xs text-gray-500">Signed in as</p>
-                  <p className="text-sm font-semibold truncate">{user.name}</p>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wider mt-0.5">
+                <div className="px-3 py-2.5 border-b border-border">
+                  <p className="text-xs text-fg-muted">Signed in as</p>
+                  <p className="text-sm font-semibold truncate text-fg">{user.name}</p>
+                  <p className="text-[11px] text-fg-muted uppercase tracking-wider mt-0.5">
                     {user.role}
                   </p>
                 </div>
@@ -140,16 +135,20 @@ export default function MobileTopBar() {
                   <li key={e.href}>
                     <Link
                       href={e.href}
-                      className="block px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+                      className="block px-3 py-2 text-sm text-fg hover:bg-surface-2"
                     >
                       {e.label}
                     </Link>
                   </li>
                 ))}
               </ul>
+              <div className="px-3 py-2 border-t border-border flex items-center justify-between">
+                <span className="text-xs text-fg-muted">Theme</span>
+                <ThemeToggle compact />
+              </div>
               <button
                 onClick={handleLogout}
-                className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 border-t border-gray-100"
+                className="w-full text-left px-3 py-2 text-sm text-[var(--danger)] hover:bg-[var(--danger-soft)] border-t border-border"
               >
                 Logout
               </button>
@@ -172,7 +171,7 @@ function ChevronDown() {
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="text-gray-500"
+      className="text-fg-muted"
     >
       <polyline points="6 9 12 15 18 9" />
     </svg>

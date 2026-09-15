@@ -55,7 +55,7 @@ export default function MobileBottomNav() {
       // Fixed to viewport bottom. The pb-safe utility doesn't exist in
       // base Tailwind so we use env(safe-area-inset-bottom) inline to
       // stay above iPhone's home indicator bar.
-      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.04)]"
+      className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-border shadow-[0_-2px_8px_rgba(0,0,0,0.04)] backdrop-blur-md supports-[backdrop-filter]:bg-surface/90"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       aria-label="Primary navigation"
     >
@@ -79,12 +79,14 @@ export default function MobileBottomNav() {
               >
                 <span
                   className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition active:scale-95 ${
-                    isActive ? 'bg-orange-500 text-white' : 'bg-black text-white'
+                    isActive
+                      ? 'bg-brand text-brand-fg'
+                      : 'bg-fg text-page dark:bg-surface-2 dark:text-fg'
                   }`}
                 >
                   <UploadIcon />
                 </span>
-                <span className="text-[10px] mt-1 text-gray-600">
+                <span className="text-[10px] mt-1 text-fg-muted">
                   {tab.label}
                 </span>
               </Link>
@@ -98,12 +100,12 @@ export default function MobileBottomNav() {
               className="flex-1 flex flex-col items-center justify-center py-1.5 max-w-[110px]"
             >
               <span
-                className={`flex items-center justify-center ${isActive ? 'text-orange-600' : 'text-gray-500'}`}
+                className={`flex items-center justify-center ${isActive ? 'text-brand' : 'text-fg-muted'}`}
               >
                 {tab.iconName === 'home' ? <HomeIcon /> : <InvoicesIcon />}
               </span>
               <span
-                className={`text-[11px] mt-0.5 ${isActive ? 'text-orange-600 font-semibold' : 'text-gray-600'}`}
+                className={`text-[11px] mt-0.5 ${isActive ? 'text-brand font-semibold' : 'text-fg-muted'}`}
               >
                 {tab.label}
               </span>

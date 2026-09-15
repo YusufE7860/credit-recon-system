@@ -1,36 +1,204 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------
+   Design tokens.
+   `--brand` is the FFG orange, kept as the primary CTA colour.
+   Everything else is a slate-based neutral palette so the app
+   feels closer to Stripe / Linear than the old flat gray-100.
+   All colours are exposed as CSS custom properties AND as Tailwind
+   theme colours (via @theme inline) so both `bg-surface` and
+   `bg-[var(--surface)]` work.
+   --------------------------------------------------------------- */
 :root {
-  --background: #f3f4f6;       /* Tailwind gray-100 */
-  --foreground: #111827;       /* Tailwind gray-900 */
-  --brand: #f97316;            /* Tailwind orange-500 */
+  color-scheme: light;
+
+  --brand: #f97316;            /* orange-500 */
+  --brand-hover: #ea580c;      /* orange-600 */
+  --brand-soft: #fff7ed;       /* orange-50 */
+  --brand-fg: #ffffff;
+
+  --page: #f8fafc;             /* slate-50 — page background */
+  --surface: #ffffff;          /* card / panel */
+  --surface-2: #f1f5f9;        /* subtle raised (hover, striped rows) */
+  --border: #e2e8f0;           /* slate-200 */
+  --border-strong: #cbd5e1;    /* slate-300 */
+
+  --fg: #0f172a;               /* slate-900 — primary text */
+  --fg-muted: #475569;         /* slate-600 — secondary text */
+  --fg-subtle: #94a3b8;        /* slate-400 — placeholder / meta */
+
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --warn: #d97706;
+  --warn-soft: #fef3c7;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+
+  --sidebar: #0b1220;          /* near-black slate — richer than pure #000 */
+  --sidebar-fg: #e2e8f0;
+
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --shadow: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 10px 25px -5px rgb(15 23 42 / 0.08), 0 4px 10px -6px rgb(15 23 42 / 0.06);
 }
 
+/* Dark mode. Class-based so the ThemeToggle can override system
+   preference. `dark` class is added to <html> by ThemeProvider. */
+html.dark {
+  color-scheme: dark;
+
+  --brand: #fb923c;            /* orange-400 — slightly lighter on dark */
+  --brand-hover: #f97316;
+  --brand-soft: rgb(251 146 60 / 0.12);
+  --brand-fg: #0b1220;
+
+  --page: #0b1220;
+  --surface: #111827;          /* gray-900 */
+  --surface-2: #1f2937;        /* gray-800 */
+  --border: #1f2937;
+  --border-strong: #334155;
+
+  --fg: #f1f5f9;
+  --fg-muted: #94a3b8;
+  --fg-subtle: #64748b;
+
+  --success: #22c55e;
+  --success-soft: rgb(34 197 94 / 0.15);
+  --warn: #f59e0b;
+  --warn-soft: rgb(245 158 11 / 0.15);
+  --danger: #ef4444;
+  --danger-soft: rgb(239 68 68 / 0.15);
+
+  --sidebar: #0b1220;
+  --sidebar-fg: #e2e8f0;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.5), 0 1px 2px -1px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 10px 25px -5px rgb(0 0 0 / 0.5), 0 4px 10px -6px rgb(0 0 0 / 0.4);
+}
+
+/* Tell Tailwind v4 what "dark:" should compile to. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
   --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-fg: var(--brand-fg);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-/* No automatic dark-mode flip — the app uses a fixed light theme
-   with a dark sidebar. The previous @media query was making body
-   text invisible on white cards when the OS was in dark mode. */
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  background: var(--page);
+  color: var(--fg);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  /* Tabular numerals for a finance app — column-aligned digits in
+     every table without needing per-cell font-variant-numeric. */
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+  -webkit-font-smoothing: antialiased;
 }
 
 /* The mobile bottom tab bar is position:fixed at the viewport bottom
    and ~75 px tall (including the iOS safe-area inset). Without this
    padding, the last bit of every page sits beneath it and can't be
-   reached by scrolling. Desktop (md+) hides the bottom nav, so no
-   padding is needed there. */
+   reached by scrolling. Desktop (md+) hides the bottom nav. */
 @media (max-width: 767px) {
   body {
     padding-bottom: calc(75px + env(safe-area-inset-bottom));
   }
+}
+
+/* Focus rings — accessible, brand-coloured, never harsh yellow. */
+*:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Skeleton shimmer — used by <Skeleton /> component. */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--border) 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200px 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* Toast slide-in animation. */
+@keyframes toast-in {
+  from { transform: translateY(-8px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.toast-in { animation: toast-in 180ms ease-out; }
+
+/* ---------------------------------------------------------------
+   Legacy-class dark-mode bridge.
+   The app was built with hard-coded Tailwind grays (bg-white,
+   bg-gray-100, text-gray-900 etc). Rather than migrate every
+   file at once, we override those specific utility classes in
+   dark mode so every existing page inherits the dark theme.
+   New code should prefer semantic classes (bg-surface, text-fg,
+   text-fg-muted, border-border), which don't need overrides.
+   --------------------------------------------------------------- */
+html.dark {
+  /* Surfaces */
+  .bg-white  { background-color: var(--surface) !important; }
+  .bg-gray-50, .bg-slate-50   { background-color: var(--page) !important; }
+  .bg-gray-100, .bg-slate-100 { background-color: var(--page) !important; }
+  .bg-gray-200, .bg-slate-200 { background-color: var(--surface-2) !important; }
+
+  /* Text */
+  .text-gray-900, .text-slate-900, .text-black { color: var(--fg) !important; }
+  .text-gray-800, .text-slate-800             { color: var(--fg) !important; }
+  .text-gray-700, .text-slate-700             { color: var(--fg-muted) !important; }
+  .text-gray-600, .text-slate-600             { color: var(--fg-muted) !important; }
+  .text-gray-500, .text-slate-500             { color: var(--fg-muted) !important; }
+  .text-gray-400, .text-slate-400             { color: var(--fg-subtle) !important; }
+
+  /* Borders + dividers */
+  .border-gray-100, .border-slate-100 { border-color: var(--border) !important; }
+  .border-gray-200, .border-slate-200 { border-color: var(--border) !important; }
+  .border-gray-300, .border-slate-300 { border-color: var(--border-strong) !important; }
+  .divide-gray-100 > * + *,
+  .divide-gray-200 > * + * { border-color: var(--border) !important; }
+
+  /* Hover states — soften light-mode grays so they look right on dark. */
+  .hover\:bg-gray-50:hover, .hover\:bg-slate-50:hover,
+  .hover\:bg-gray-100:hover, .hover\:bg-slate-100:hover {
+    background-color: var(--surface-2) !important;
+  }
+
+  /* Soft brand-tinted rows shouldn't be a hard orange on dark. */
+  .bg-orange-50 { background-color: var(--brand-soft) !important; }
+  .text-orange-600, .text-orange-700 { color: var(--brand) !important; }
+
+  /* Report page in report/*  — force white body to stay white for print
+     even in dark mode. Applied via the .light-force class if needed. */
+}
+
+/* Print — collapse app chrome and let the content take full width. */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff !important; color: #0f172a !important; }
+  html.dark { color-scheme: light; }
 }

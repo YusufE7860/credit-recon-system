@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import InstallAppButton from '@/components/InstallAppButton';
+import { Button } from '@/components/ui/Button';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -10,16 +12,14 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
     try {
-      // Call the NestJS backend directly. `credentials: 'include'` is the
-      // magic flag that tells the browser to accept and store the
-      // Set-Cookie header the backend sends back. Without it, the JWT
-      // cookie would be dropped on the floor.
       const apiUrl =
         process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
       const response = await fetch(`${apiUrl}/auth/login`, {
@@ -28,15 +28,12 @@ export default function LoginPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          email,
-          password,
-        }),
+        body: JSON.stringify({ email, password }),
       });
 
       if (!response.ok) {
-        // Backend returns 401 for bad credentials — caught here.
         setError('Invalid email or password');
+        setLoading(false);
         return;
       }
 
@@ -44,101 +41,104 @@ export default function LoginPage() {
 
       if (!data.success) {
         setError('Login failed. Please try again.');
+        setLoading(false);
         return;
       }
 
-      // Cookie is now set by the browser. UPLOADERs go straight to the
-      // upload page (they have no dashboard); everyone else lands on
-      // the dashboard as before.
       const landing =
         data?.user?.role === 'UPLOADER' ? '/upload' : '/dashboard';
       router.push(landing);
     } catch (err) {
       setError('Server connection failed');
+      setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen bg-black flex items-center justify-center p-4">
-      <div className="bg-white shadow-2xl rounded-2xl p-10 w-full max-w-md">
-
+    <main className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden bg-page">
+      {/* Ambient brand glow — subtle radial gradients behind the card
+          give the login screen depth without a heavy hero image. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            'radial-gradient(60% 40% at 20% 20%, rgba(249,115,22,0.15) 0%, transparent 60%), radial-gradient(50% 40% at 80% 80%, rgba(59,130,246,0.10) 0%, transparent 60%)',
+        }}
+      />
+      <div className="relative bg-surface border border-border shadow-lg rounded-3xl p-8 md:p-10 w-full max-w-md">
         <div className="mb-8 text-center">
-          {/* Brand */}
-          <div className="bg-black rounded-xl p-6 mb-6">
+          <div className="bg-[color:var(--sidebar)] rounded-2xl p-6 mb-6">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/fusion-logo.png"
               alt="FUSION"
-              className="w-full max-w-[260px] mx-auto h-auto"
+              className="w-full max-w-[220px] mx-auto h-auto"
             />
           </div>
 
-          <h1 className="text-2xl font-bold text-gray-900">
-            FFG Recon System
+          <h1 className="text-2xl font-semibold text-fg">
+            Welcome back
           </h1>
-          <p className="text-gray-600 mt-1 text-sm">
-            Sign in to continue
+          <p className="text-fg-muted mt-1 text-sm">
+            Sign in to the FFG Recon system
           </p>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-5">
-
+        <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-fg-muted mb-1.5">
               Email
             </label>
-
             <input
               type="email"
+              autoComplete="email"
               placeholder="you@company.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-orange-500"
+              className="w-full bg-surface border border-border rounded-lg px-3.5 py-2.5 text-fg placeholder:text-fg-subtle focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/30 transition"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Password
-            </label>
-
+            <div className="flex items-baseline justify-between mb-1.5">
+              <label className="block text-sm font-medium text-fg-muted">
+                Password
+              </label>
+              <Link
+                href="/forgot-password"
+                className="text-xs text-brand hover:underline"
+              >
+                Forgot?
+              </Link>
+            </div>
             <input
               type="password"
+              autoComplete="current-password"
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-orange-500"
+              className="w-full bg-surface border border-border rounded-lg px-3.5 py-2.5 text-fg placeholder:text-fg-subtle focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/30 transition"
             />
           </div>
 
           {error && (
-            <p className="text-red-500 text-sm">
+            <div className="bg-[var(--danger-soft)] border border-[var(--danger)]/30 text-[var(--danger)] text-sm rounded-lg px-3 py-2">
               {error}
-            </p>
+            </div>
           )}
 
-          <button
+          <Button
             type="submit"
-            className="w-full bg-black text-white py-3 rounded-lg hover:opacity-90 transition"
+            variant="primary"
+            size="lg"
+            fullWidth
+            loading={loading}
           >
-            Sign In
-          </button>
+            Sign in
+          </Button>
 
-          <p className="text-sm text-center text-gray-500 pt-2">
-            <a
-              href="/forgot-password"
-              className="hover:text-black hover:underline"
-            >
-              Forgot password?
-            </a>
-          </p>
-
-          {/* PWA install button. Self-hides on desktop, on browsers
-              that don't support the install flow, and when the app
-              is already installed — so on mobile it shows, otherwise
-              this slot is empty. */}
           <InstallAppButton />
-
         </form>
       </div>
     </main>
