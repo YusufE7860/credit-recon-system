@@ -7,6 +7,7 @@ import Sidebar from '@/components/Sidebar';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { api, apiUpload, ApiError } from '@/lib/api';
 import { useCurrentUser, isPrivileged } from '@/lib/user-context';
+import MatchCelebrationModal from '@/components/ui/MatchCelebrationModal';
 
 type StoreOption = { id: string; name: string };
 type CategoryOption = { id: string; name: string };
@@ -160,6 +161,15 @@ export default function UploadPage() {
 
   // Invoice mode: a queue of files (camera + picker can both add to it)
   const [queue, setQueue] = useState<QueueItem[]>([]);
+
+  // Celebration modal — populated by uploadQueue() whenever a file
+  // comes back matched. Holds the last matched invoice so the modal
+  // can show its supplier + linked transaction until dismissed.
+  const [celebrate, setCelebrate] = useState<{
+    supplier: string;
+    invoiceId?: string;
+    transaction?: InvoiceUploadResult['transaction'];
+  } | null>(null);
 
   // Shared metadata applied to every file in the queue as a DEFAULT.
   // Each QueueItem also carries its own category/store that start from
@@ -416,6 +426,22 @@ export default function UploadPage() {
           ),
         );
         successCount++;
+
+        // 🎉 Celebrate matched uploads. Only overwrite if the modal
+        // isn't already showing — for a batch of matches we'd rather
+        // show ONE confetti burst than queue five in a row. The user
+        // can see the rest via the per-row banners.
+        if (result.uploadOutcome === 'matched') {
+          setCelebrate((cur) =>
+            cur
+              ? cur
+              : {
+                  supplier: result.supplier,
+                  invoiceId: result.id,
+                  transaction: result.transaction ?? null,
+                },
+          );
+        }
       } catch (err) {
         const msg =
           err instanceof ApiError ? err.message : 'Upload failed';
@@ -922,6 +948,17 @@ export default function UploadPage() {
           </div>
         )}
       </section>
+
+      {/* 🎉 Match celebration — fires when an invoice comes back with
+          uploadOutcome === 'matched'. Rendered at the end so it
+          overlays the whole page and doesn't shift layout. */}
+      <MatchCelebrationModal
+        open={!!celebrate}
+        supplier={celebrate?.supplier ?? ''}
+        invoiceId={celebrate?.invoiceId}
+        transaction={celebrate?.transaction ?? null}
+        onClose={() => setCelebrate(null)}
+      />
     </main>
   );
 }
