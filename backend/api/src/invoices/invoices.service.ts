@@ -524,9 +524,11 @@ export class InvoicesService {
     // transaction pool. Async-safe: any failure logs and continues —
     // the upload still succeeds with PENDING status, and the user
     // can always click "Run Reconciliation" later.
+    let matched = false;
     try {
       const result = await this.recon.matchSingleInvoice(created.id);
-      if (result.matched) {
+      matched = !!result.matched;
+      if (matched) {
         this.logger.log(
           `Invoice ${created.id} auto-matched (score ${result.score?.toFixed(2)})`,
         );
@@ -537,8 +539,55 @@ export class InvoicesService {
       );
     }
 
-    // Re-load so the caller sees the matched state if it happened.
-    return this.prisma.invoice.findUnique({ where: { id: created.id } });
+    // Re-load so the caller sees the matched state if it happened, plus
+    // the matched transaction (if any) so the frontend can render a
+    // rich confirmation ("Matched to Woolworths, R213.60, 14 Sep").
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: created.id },
+      include: { transaction: { select: { id: true, merchant: true, amount: true, transactionDate: true, cardLast4: true } } },
+    });
+
+    // Does any uploaded statement's period cover this invoice's date?
+    // Used by the frontend to decide whether to prompt the user to
+    // manually match now vs "wait for a statement covering this date".
+    // Broad scope: any statement in the org — a receipt dated in June
+    // will find June statements uploaded for any card, which is what
+    // the user cares about ("is there something to match against?").
+    const coveringStatement = await this.prisma.statement.findFirst({
+      where: {
+        periodStart: { lte: finalInvoiceDate },
+        periodEnd: { gte: finalInvoiceDate },
+      },
+      select: { id: true, statementName: true, periodStart: true, periodEnd: true },
+      orderBy: { periodEnd: 'desc' },
+    });
+
+    // Compose an intent string the frontend can switch on:
+    //   'matched'                 — happy path, show confetti
+    //   'unmatched-can-match-now' — statement covers this date, show
+    //                               the "Match now?" modal
+    //   'unmatched-wait'          — no covering statement yet, show
+    //                               the "We'll match when the
+    //                               statement is uploaded" modal
+    //   'needs-review'            — OCR flagged the invoice for review
+    let uploadOutcome:
+      | 'matched'
+      | 'unmatched-can-match-now'
+      | 'unmatched-wait'
+      | 'needs-review';
+    if (matched) uploadOutcome = 'matched';
+    else if (invoice?.requiresReview) uploadOutcome = 'needs-review';
+    else uploadOutcome = coveringStatement
+      ? 'unmatched-can-match-now'
+      : 'unmatched-wait';
+
+    return {
+      ...invoice,
+      // Extra fields on the response so the upload page can decide what
+      // to show without a second round-trip.
+      uploadOutcome,
+      coveringStatement,
+    };
   }
 
   // Re-run OCR + parsing on an existing invoice's file. Useful when the

@@ -13,6 +13,7 @@ import { AuditLogService } from '../audit/audit.service';
 import { AuditAction } from '../audit/audit-actions';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
+import { MailerService } from '../mailer/mailer.service';
 
 // Default if no Setting row exists.
 const DEFAULT_UNLOCK_HOURS = 24;
@@ -36,6 +37,7 @@ export class EditRequestsService {
     private settings: SettingsService,
     private audit: AuditLogService,
     private notifications: NotificationsService,
+    private mailer: MailerService,
   ) {}
 
   // USER (or UPLOADER) creates a request to edit a sealed invoice.
@@ -145,6 +147,47 @@ export class EditRequestsService {
       link: `/admin/edit-requests`,
       excludeUserId: currentUser.sub,
     });
+
+    // Email every ACTIVE admin too. Fire-and-forget — if SMTP fails
+    // the in-app notification above still reaches them. We fetch the
+    // requester's name for the subject line ("Rehan → Woolworths").
+    void (async () => {
+      try {
+        const [admins, requester] = await Promise.all([
+          this.prisma.user.findMany({
+            where: { role: Role.ADMIN, active: true },
+            select: { name: true, email: true, id: true },
+          }),
+          this.prisma.user.findUnique({
+            where: { id: currentUser.sub },
+            select: { name: true, role: true },
+          }),
+        ]);
+        const requesterName = requester?.name ?? currentUser.email;
+        const requesterRole = requester?.role ?? 'USER';
+        await Promise.all(
+          admins
+            .filter((a) => a.id !== currentUser.sub) // don't email the requester
+            .map((a) =>
+              this.mailer.sendEditRequestToAdmin({
+                to: a.email,
+                adminName: a.name,
+                requesterName,
+                requesterRole,
+                invoiceSupplier: invoice.supplier,
+                invoiceId: invoice.id,
+                reason: input.reason.trim(),
+                fields: input.fieldsToEdit ?? null,
+                type: type === EditRequestType.METADATA ? 'METADATA' : 'FINANCIAL',
+              }),
+            ),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Edit-request admin email send failed for request ${created.id}: ${(err as Error).message}`,
+        );
+      }
+    })();
 
     return created;
   }

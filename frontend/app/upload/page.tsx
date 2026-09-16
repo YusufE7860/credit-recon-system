@@ -16,6 +16,34 @@ type UploadKind = 'invoice' | 'statement';
 // Status of one file in the upload queue.
 type QueueItemStatus = 'pending' | 'uploading' | 'success' | 'error';
 
+// Backend upload response — matches invoices.service.createFromUpload.
+// `uploadOutcome` decides which post-upload modal we show; the covering
+// statement (if any) lets us link straight to the "match now" flow.
+export type UploadOutcome =
+  | 'matched'
+  | 'unmatched-can-match-now'
+  | 'unmatched-wait'
+  | 'needs-review';
+
+export interface InvoiceUploadResult {
+  id: string;
+  supplier: string;
+  uploadOutcome: UploadOutcome;
+  transaction?: {
+    id: string;
+    merchant: string;
+    amount: number;
+    transactionDate: string;
+    cardLast4: string | null;
+  } | null;
+  coveringStatement?: {
+    id: string;
+    statementName: string;
+    periodStart: string | null;
+    periodEnd: string | null;
+  } | null;
+}
+
 interface QueueItem {
   id: string;          // local-only uuid
   file: File;
@@ -24,6 +52,11 @@ interface QueueItem {
   error?: string;
   resultId?: string;   // backend invoice id after success
   resultSupplier?: string;
+  // Rich outcome fields — used to render the celebratory / prompt
+  // banner on each queue row after the upload finishes.
+  outcome?: UploadOutcome;
+  matchedTransaction?: InvoiceUploadResult['transaction'];
+  coveringStatement?: InvoiceUploadResult['coveringStatement'];
   // Per-file reason — what the transaction was for. Flows through to
   // invoice.notes and lands in the FULL DESCRIPTION column on the
   // recon XLSX. Required before upload.
@@ -362,10 +395,10 @@ export default function UploadPage() {
             fd.append('splits', JSON.stringify(clean));
           }
         }
-        const result = await apiUpload<{
-          id: string;
-          supplier: string;
-        }>('/invoices/upload', fd);
+        const result = await apiUpload<InvoiceUploadResult>(
+          '/invoices/upload',
+          fd,
+        );
 
         setQueue((q) =>
           q.map((i) =>
@@ -375,6 +408,9 @@ export default function UploadPage() {
                   status: 'success',
                   resultId: result.id,
                   resultSupplier: result.supplier,
+                  outcome: result.uploadOutcome,
+                  matchedTransaction: result.transaction ?? null,
+                  coveringStatement: result.coveringStatement ?? null,
                 }
               : i,
           ),
@@ -903,27 +939,113 @@ function QueueItemStatusLine({ item }: { item: QueueItem }) {
         </p>
       );
     case 'success':
-      return (
-        <p className="text-xs text-green-700 mt-1">
-          ✓ Imported as <strong>{item.resultSupplier}</strong>
-          {item.resultId && (
-            <>
-              {' · '}
-              <Link
-                href={`/invoices/${item.resultId}`}
-                className="underline hover:no-underline"
-              >
-                view
-              </Link>
-            </>
-          )}
-        </p>
-      );
+      return <UploadOutcomeBanner item={item} />;
     case 'error':
       return (
         <p className="text-xs text-red-600 mt-1">✗ {item.error}</p>
       );
   }
+}
+
+// Colourful post-upload banner. Four flavours:
+//   matched                 → green success with the matched-to line
+//   unmatched-can-match-now → amber "Match now" CTA
+//   unmatched-wait          → blue info: no covering statement yet
+//   needs-review            → amber "Review this invoice" CTA
+function UploadOutcomeBanner({ item }: { item: QueueItem }) {
+  const supplier = item.resultSupplier ?? 'invoice';
+  const viewLink = item.resultId ? `/invoices/${item.resultId}` : undefined;
+  const outcome = item.outcome ?? 'unmatched-wait';
+
+  if (outcome === 'matched') {
+    const m = item.matchedTransaction;
+    return (
+      <div className="mt-2 rounded-lg border border-green-300 bg-green-50 px-3 py-2 text-sm">
+        <p className="font-semibold text-green-800">
+          🎉 Matched! <span className="font-normal">Uploaded as {supplier}</span>
+        </p>
+        {m && (
+          <p className="text-xs text-green-700 mt-1">
+            Linked to <strong>{m.merchant}</strong> · R{' '}
+            {m.amount.toFixed(2)} on{' '}
+            {new Date(m.transactionDate).toLocaleDateString('en-ZA')}
+            {m.cardLast4 && <> · card …{m.cardLast4}</>}
+          </p>
+        )}
+        {viewLink && (
+          <Link
+            href={viewLink}
+            className="inline-block mt-1.5 text-xs text-green-800 underline hover:no-underline"
+          >
+            View invoice →
+          </Link>
+        )}
+      </div>
+    );
+  }
+
+  if (outcome === 'unmatched-can-match-now') {
+    return (
+      <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm">
+        <p className="font-semibold text-amber-900">
+          Not matched yet — <span className="font-normal">but a statement covers this date.</span>
+        </p>
+        <p className="text-xs text-amber-800 mt-1">
+          You can pick the right transaction now instead of waiting.
+        </p>
+        {viewLink && (
+          <Link
+            href={viewLink}
+            className="inline-block mt-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold px-2.5 py-1 hover:bg-amber-700"
+          >
+            Match now →
+          </Link>
+        )}
+      </div>
+    );
+  }
+
+  if (outcome === 'needs-review') {
+    return (
+      <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm">
+        <p className="font-semibold text-amber-900">
+          Uploaded — <span className="font-normal">but the OCR flagged it for review.</span>
+        </p>
+        <p className="text-xs text-amber-800 mt-1">
+          Please check the extracted supplier, total and VAT before matching.
+        </p>
+        {viewLink && (
+          <Link
+            href={viewLink}
+            className="inline-block mt-1.5 rounded-md bg-amber-600 text-white text-xs font-semibold px-2.5 py-1 hover:bg-amber-700"
+          >
+            Review invoice →
+          </Link>
+        )}
+      </div>
+    );
+  }
+
+  // 'unmatched-wait' — no statement covers the invoice date yet.
+  return (
+    <div className="mt-2 rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-sm">
+      <p className="font-semibold text-blue-900">
+        Uploaded — waiting for the statement.
+      </p>
+      <p className="text-xs text-blue-800 mt-1">
+        No statement covering this invoice&apos;s date has been uploaded yet.
+        We&apos;ll auto-match it as soon as a covering statement lands.
+      </p>
+      {viewLink && (
+        <Link
+          href={viewLink}
+          className="inline-block mt-1.5 text-xs text-blue-900 underline hover:no-underline"
+        >
+          View invoice →
+        </Link>
+      )}
+    </div>
+  );
 }
 
 // Inline split editor — collapsed by default ("+ Split into multiple

@@ -9,6 +9,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/notification-types';
 import { AuditLogService } from '../audit/audit.service';
 import { AuditAction } from '../audit/audit-actions';
+import { MailerService } from '../mailer/mailer.service';
+import { Logger } from '@nestjs/common';
 
 // Subset of user fields we surface alongside cards (when one is assigned).
 const USER_PUBLIC_SELECT = {
@@ -49,10 +51,12 @@ export interface TransactionCardholder {
 
 @Injectable()
 export class TransactionsService {
+  private readonly logger = new Logger(TransactionsService.name);
   constructor(
     private prisma: PrismaService,
     private notifications: NotificationsService,
     private audit: AuditLogService,
+    private mailer: MailerService,
   ) {}
 
   // Admin "nudge" — sends an in-app notification to the transaction's
@@ -87,6 +91,31 @@ export class TransactionsService {
       body: `Please upload an invoice for ${merchant} — ${amount} on ${formattedDate}.`,
       link: '/upload',
     });
+
+    // Email the user too. Fire-and-forget: SMTP hiccup shouldn't
+    // block the in-app notification / audit that already succeeded.
+    void (async () => {
+      try {
+        const owner = await this.prisma.user.findUnique({
+          where: { id: tx.userId },
+          select: { name: true, email: true, active: true },
+        });
+        if (owner?.active && owner.email) {
+          await this.mailer.sendInvoiceChaseToUser({
+            to: owner.email,
+            name: owner.name,
+            merchant,
+            amount: tx.amount,
+            transactionDate: tx.transactionDate,
+            cardLast4: tx.cardLast4,
+          });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `notifyOwnerAboutUnmatched: email send failed for tx ${tx.id}: ${(err as Error).message}`,
+        );
+      }
+    })();
 
     await this.audit.record({
       actorId: actor.sub,

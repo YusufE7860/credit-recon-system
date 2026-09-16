@@ -11,6 +11,7 @@ import {
   looksLikeBankFee,
 } from './pdf-parser.service';
 import { ReconciliationService } from '../reconciliation/reconciliation.service';
+import { MailerService } from '../mailer/mailer.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
 import {
   normaliseLast4,
@@ -107,7 +108,105 @@ export class StatementsService {
     // uploaded mid-month sat in PENDING forever once a statement landed,
     // because nothing was calling the matcher.
     private reconciliation: ReconciliationService,
+    private mailer: MailerService,
   ) {}
+
+  // After a statement is imported (and auto-recon has run), email each
+  // cardholder whose card appears on it with their still-unmatched
+  // transactions in the statement's period. Fire-and-forget: any
+  // failure logs but never breaks the import.
+  private async emailCardholdersAboutStatement(statement: {
+    id: string;
+    statementName: string;
+    periodStart: Date | null;
+    periodEnd: Date | null;
+  }): Promise<void> {
+    try {
+      // Pull every transaction on this statement, joined with its card
+      // and card owner. Group by owner userId in JS, then per group
+      // build the list of still-unmatched purchase rows in the period.
+      const txns = await this.prisma.transaction.findMany({
+        where: { statementId: statement.id },
+        select: {
+          id: true,
+          merchant: true,
+          amount: true,
+          transactionDate: true,
+          cardLast4: true,
+          matched: true,
+          noMatchRequired: true,
+          userId: true,
+        },
+      });
+      // Group by userId (the card's assigned user at import time).
+      const byUser = new Map<
+        string,
+        Array<{
+          merchant: string;
+          amount: number;
+          date: Date;
+          cardLast4: string | null;
+          matched: boolean;
+          noMatchRequired: boolean;
+        }>
+      >();
+      for (const t of txns) {
+        if (!t.userId) continue;
+        const list = byUser.get(t.userId) ?? [];
+        list.push({
+          merchant: t.merchant || '(unknown merchant)',
+          amount: t.amount,
+          date: t.transactionDate,
+          cardLast4: t.cardLast4,
+          matched: t.matched,
+          noMatchRequired: t.noMatchRequired,
+        });
+        byUser.set(t.userId, list);
+      }
+      if (byUser.size === 0) {
+        this.logger.log(
+          `Statement ${statement.id}: no owned transactions — no cardholder emails to send.`,
+        );
+        return;
+      }
+      // Look up all cardholders in one query.
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: Array.from(byUser.keys()) }, active: true },
+        select: { id: true, name: true, email: true },
+      });
+      for (const u of users) {
+        const rows = byUser.get(u.id) ?? [];
+        // Purchase-side unmatched only. Refund lines (negative amounts)
+        // and bank-fee rows never need chasing.
+        const unmatched = rows
+          .filter(
+            (r) => !r.matched && !r.noMatchRequired && r.amount > 0,
+          )
+          .sort((a, b) => a.date.getTime() - b.date.getTime());
+        try {
+          await this.mailer.sendStatementUploadedToCardholder({
+            to: u.email,
+            name: u.name,
+            statementName: statement.statementName,
+            periodStart: statement.periodStart,
+            periodEnd: statement.periodEnd,
+            unmatched,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Statement ${statement.id}: email to ${u.email} failed: ${(err as Error).message}`,
+          );
+        }
+      }
+      this.logger.log(
+        `Statement ${statement.id}: emailed ${users.length} cardholder(s) about the new upload.`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Statement ${statement.id}: cardholder email dispatch failed: ${(err as Error).message}`,
+      );
+    }
+  }
 
   async list(currentUser: JwtUser) {
     // Visibility rules:
@@ -389,6 +488,10 @@ export class StatementsService {
     // earlier in the month and were waiting for the statement to land.
     await this.runAutoReconForStatement(statement);
 
+    // Fire-and-forget cardholder emails — targeted per user with their
+    // still-unmatched transactions in the statement's period.
+    void this.emailCardholdersAboutStatement(statement);
+
     return statement;
   }
 
@@ -538,6 +641,11 @@ export class StatementsService {
     // and they've been uploading receipts all month waiting for the
     // statement.
     await this.runAutoReconForStatement(statement);
+
+    // Then email each cardholder with their still-unmatched transactions
+    // from this statement. Fire-and-forget so a mail hiccup doesn't
+    // change the upload response.
+    void this.emailCardholdersAboutStatement(statement);
 
     return {
       ...statement,
