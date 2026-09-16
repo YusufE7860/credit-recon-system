@@ -39,25 +39,43 @@ export class EditRequestsService {
   ) {}
 
   // USER (or UPLOADER) creates a request to edit a sealed invoice.
-  //   - USER may request on invoices they own.
-  //   - UPLOADER may request on invoices they uploaded.
+  //   - The invoice's owner (userId) may request an edit.
+  //   - The uploader (uploaderId) may request an edit — regardless of
+  //     role. Previously this was UPLOADER-only, which locked out
+  //     assistants who uploaded the receipt on someone else's behalf.
   //   - Admin/Reporting don't need requests; they edit directly.
   async create(input: CreateEditRequestInput, currentUser: JwtUser) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: input.invoiceId },
     });
     if (!invoice) {
+      // True 404 — the id doesn't exist at all.
+      this.logger.warn(
+        `Edit-request create: invoice ${input.invoiceId} not found in DB (caller ${currentUser.sub})`,
+      );
       throw new NotFoundException(`Invoice ${input.invoiceId} not found`);
     }
 
-    // Permission check — owner OR uploader (for UPLOADER role).
-    const isOwner = invoice.userId === currentUser.sub;
-    const isUploaderOfThis =
-      currentUser.role === Role.UPLOADER &&
-      invoice.uploaderId === currentUser.sub;
-    if (!isOwner && !isUploaderOfThis) {
-      // Don't leak existence — same 404 we'd return for a missing invoice.
-      throw new NotFoundException(`Invoice ${input.invoiceId} not found`);
+    // Permission check — the caller must be the owner OR the uploader.
+    // Uploader check applies to every role, not just UPLOADER, so an
+    // admin-attached invoice with a still-empty owner still lets the
+    // uploader raise a request.
+    const isOwner =
+      invoice.userId != null && invoice.userId === currentUser.sub;
+    const isUploader =
+      invoice.uploaderId != null && invoice.uploaderId === currentUser.sub;
+    if (!isOwner && !isUploader) {
+      this.logger.warn(
+        `Edit-request create: user ${currentUser.sub} (${currentUser.role}) has no relation to invoice ${invoice.id} ` +
+          `(owner=${invoice.userId ?? 'null'}, uploader=${invoice.uploaderId ?? 'null'})`,
+      );
+      // Return a clearer message than the generic 404 so support can
+      // triage without digging through logs. Still 403, not 404 — the
+      // caller knows the id (they typed it), and hiding existence
+      // doesn't help against an authenticated internal user.
+      throw new ForbiddenException(
+        `You don't have permission to request edits on this invoice — you're neither the owner nor the uploader.`,
+      );
     }
 
     const type = input.type ?? EditRequestType.FINANCIAL;
