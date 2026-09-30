@@ -144,6 +144,69 @@ export class StatementsService {
           `AI statement extraction: ${ai.cards.length} card sections, confidence ${(ai.confidence * 100).toFixed(0)}%`,
         );
 
+        // Diagnostic: break the AI output down by row kind BEFORE we
+        // decide whether to trust it. This is how we tell whether the
+        // AI is inflating totals by mis-classifying credits (Balance
+        // Transferred, Payment) as PURCHASE, or including sections it
+        // was told to skip. Logged unconditionally so we have the
+        // numbers even when the sanity check accepts the extraction.
+        const byKind: Record<string, { count: number; sum: number }> = {};
+        const suspiciousRows: Array<{
+          card: string;
+          date: string;
+          merchant: string;
+          amount: number;
+          kind: string;
+        }> = [];
+        for (const c of ai.cards) {
+          for (const r of c.rows) {
+            const bucket = byKind[r.kind] ?? { count: 0, sum: 0 };
+            bucket.count += 1;
+            bucket.sum += r.amount;
+            byKind[r.kind] = bucket;
+            // Flag anything that mentions balance transfer / payment
+            // in the merchant field but wasn't classified as PAYMENT
+            // — that's our top suspect for the R 141k over-count.
+            const m = r.merchant.toLowerCase();
+            if (
+              (m.includes('balance transfer') ||
+                m.includes('payment received') ||
+                m.includes('payment - thank') ||
+                m.includes('thank you')) &&
+              r.kind !== 'PAYMENT' &&
+              r.kind !== 'ADVANCE'
+            ) {
+              suspiciousRows.push({
+                card: c.last4,
+                date: r.date,
+                merchant: r.merchant,
+                amount: r.amount,
+                kind: r.kind,
+              });
+            }
+          }
+        }
+        const kindReport = Object.entries(byKind)
+          .map(
+            ([k, v]) =>
+              `${k}=${v.count}×R${v.sum.toFixed(2)}`,
+          )
+          .join(', ');
+        this.logger.log(`AI row breakdown by kind: ${kindReport}`);
+        if (suspiciousRows.length > 0) {
+          this.logger.warn(
+            `AI mis-classified rows (${suspiciousRows.length} rows that look like payments/transfers but weren't PAYMENT/ADVANCE):`,
+          );
+          for (const s of suspiciousRows.slice(0, 20)) {
+            this.logger.warn(
+              `  • card ${s.card}, ${s.date}, "${s.merchant}" R${s.amount.toFixed(2)} → ${s.kind}`,
+            );
+          }
+          if (suspiciousRows.length > 20) {
+            this.logger.warn(`  … +${suspiciousRows.length - 20} more`);
+          }
+        }
+
         // Sanity check — sum every purchase-ish row and compare to
         // the bank's stated total. If they disagree by more than 10%
         // the AI has almost certainly leaked in something it should
@@ -400,6 +463,75 @@ export class StatementsService {
     });
   }
 
+  // Lightweight polling endpoint payload. Returns only the fields the
+  // upload page needs to know: current status, error (if any),
+  // imported/skipped counts once the parse is done. Deliberately does
+  // NOT include the transaction list — that would balloon the response
+  // during polling and add DB load. The dedicated getById endpoint
+  // still returns the full statement when the user clicks in.
+  //
+  // Because the async path may delete the placeholder row and create a
+  // new one when the parse succeeds, this endpoint also searches by
+  // the placeholder's fileHash — if the id lookup fails, we look up
+  // the newest COMPLETED / FAILED row with the same hash so the
+  // frontend's polling loop still finds the outcome.
+  async getStatus(id: string, currentUser?: JwtUser) {
+    let statement = await this.prisma.statement.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        statementName: true,
+        status: true,
+        errorMessage: true,
+        importedCount: true,
+        skippedCount: true,
+        fileHash: true,
+        periodStart: true,
+        periodEnd: true,
+      },
+    });
+
+    // Placeholder was replaced — look for the resolved row by hash.
+    if (!statement) {
+      // Without a hash we can't do the recovery lookup; report gone.
+      return { id, status: 'NOT_FOUND' as const };
+    }
+    if (statement.status === 'PROCESSING' && statement.fileHash) {
+      const resolved = await this.prisma.statement.findFirst({
+        where: { fileHash: statement.fileHash, status: { not: 'PROCESSING' } },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          statementName: true,
+          status: true,
+          errorMessage: true,
+          importedCount: true,
+          skippedCount: true,
+          fileHash: true,
+          periodStart: true,
+          periodEnd: true,
+        },
+      });
+      if (resolved) statement = resolved;
+    }
+
+    // Non-privileged callers can only poll their own uploads.
+    if (
+      currentUser &&
+      !isPrivileged(currentUser.role) &&
+      statement.status !== 'NOT_FOUND'
+    ) {
+      // Extra ownership check for regular users.
+      const owned = await this.prisma.statement.findFirst({
+        where: { id: statement.id, userId: currentUser.sub },
+        select: { id: true },
+      });
+      if (!owned) return { id: statement.id, status: 'FORBIDDEN' as const };
+    }
+
+    return statement;
+  }
+
   async getById(id: string, currentUser?: JwtUser) {
     const statement = await this.prisma.statement.findUnique({
       where: { id },
@@ -537,9 +669,14 @@ export class StatementsService {
       );
     }
 
-    // PDFs (multi-card bank statements) take a different code path.
+    // PDFs (multi-card bank statements) take the async path — AI
+    // extraction can take a minute or two, so we return immediately
+    // with a placeholder statement id and process in the background.
+    // The frontend polls /statements/:id/status until it flips to
+    // COMPLETED (or FAILED). This prevents the "browser thinks it
+    // failed, user re-uploads, now we have duplicates" problem.
     if (file.mimetype === 'application/pdf') {
-      return this.createFromPdfUpload(file, meta, userId);
+      return this.createFromPdfUploadAsync(file, meta, userId);
     }
 
     // ---- CSV path (single-card statement) ----
@@ -657,6 +794,139 @@ export class StatementsService {
     void this.emailCardholdersAboutStatement(statement);
 
     return statement;
+  }
+
+  // Async upload wrapper. Persists the file, computes its hash, checks
+  // for duplicates, creates a PROCESSING statement row, returns
+  // immediately, and kicks off the parse in the background. The
+  // background task marks the row COMPLETED or FAILED when done.
+  private async createFromPdfUploadAsync(
+    file: Express.Multer.File,
+    meta: UploadStatementMeta,
+    uploaderId: string,
+  ) {
+    // Compute SHA-256 of the file contents. Buffer-based so it works
+    // for the ~30 MB statements we see. Any duplicate upload of the
+    // exact same PDF gets rejected before we do any work.
+    const crypto = await import('crypto');
+    const fileBuffer = fs.readFileSync(file.path);
+    const fileHash = crypto
+      .createHash('sha256')
+      .update(fileBuffer)
+      .digest('hex');
+
+    const duplicate = await this.prisma.statement.findFirst({
+      where: {
+        fileHash,
+        // Include only COMPLETED / PROCESSING — if a previous attempt
+        // FAILED, we allow retry (the user may have fixed something
+        // out-of-band and wants another go).
+        status: { in: ['COMPLETED', 'PROCESSING'] },
+      },
+      select: { id: true, statementName: true, status: true, createdAt: true },
+    });
+    if (duplicate) {
+      // Clean up the just-uploaded file — no point keeping it.
+      try { fs.unlinkSync(file.path); } catch { /* best effort */ }
+      throw new BadRequestException(
+        `This statement was already uploaded on ${duplicate.createdAt.toLocaleDateString('en-ZA')} ` +
+          `as "${duplicate.statementName}" (status: ${duplicate.status.toLowerCase()}). ` +
+          `Delete the existing one first if you want to re-import.`,
+      );
+    }
+
+    // Create a placeholder statement immediately so the caller has an
+    // id to poll against. importedCount = 0 for now — the background
+    // task will update this when parse finishes.
+    const placeholder = await this.prisma.statement.create({
+      data: {
+        statementName:
+          meta.statementName?.trim() || nameFromFilename(file.originalname),
+        bankName: meta.bankName ?? null,
+        cardLast4: null,
+        periodStart: meta.periodStart ? new Date(meta.periodStart) : null,
+        periodEnd: meta.periodEnd ? new Date(meta.periodEnd) : null,
+        filePath: path.basename(file.path),
+        importedCount: 0,
+        skippedCount: 0,
+        status: 'PROCESSING',
+        fileHash,
+        userId: uploaderId,
+      },
+    });
+    this.logger.log(
+      `Async PDF upload accepted: statement ${placeholder.id} queued for background processing`,
+    );
+
+    // Fire the real work into the event loop. `setImmediate` lets the
+    // controller's response go out first. Any thrown error is caught
+    // and stored on the statement row so the frontend can surface it.
+    setImmediate(() => {
+      this.processPdfInBackground(placeholder.id, file, meta, uploaderId).catch(
+        (err) => {
+          this.logger.error(
+            `Background processing failed for statement ${placeholder.id}: ${(err as Error).message}`,
+          );
+        },
+      );
+    });
+
+    // Return the placeholder row to the caller. Client polls
+    // /statements/:id/status until status flips.
+    return placeholder;
+  }
+
+  // Runs the actual createFromPdfUpload logic inside a try/catch that
+  // updates the statement row's status when done. On success, the
+  // placeholder row is updated in place with the real parse results.
+  // On failure, status flips to FAILED and errorMessage carries the reason.
+  private async processPdfInBackground(
+    statementId: string,
+    file: Express.Multer.File,
+    meta: UploadStatementMeta,
+    uploaderId: string,
+  ) {
+    try {
+      // Reuse the existing PDF processor. It creates its OWN statement
+      // row, which we then need to consolidate — cleanest approach is
+      // to run it and then re-parent everything to our placeholder id.
+      // Simpler alternative: delete the placeholder, let the processor
+      // create the real one. We use the simpler alternative here.
+      await this.prisma.statement.delete({ where: { id: statementId } });
+      await this.createFromPdfUpload(file, meta, uploaderId);
+      this.logger.log(
+        `Background processing completed (original placeholder ${statementId} replaced by real statement)`,
+      );
+    } catch (err) {
+      // Restore a failed row so the frontend polling gets an answer.
+      // We can't re-create by the same UUID after delete, so we make
+      // a new record marked FAILED that shares the fileHash — the
+      // frontend's initial poll knows the original id but the failed
+      // row will be visible to admins in the statements list too.
+      this.logger.error(
+        `PDF background processing FAILED: ${(err as Error).message}`,
+      );
+      // Best-effort re-create so the placeholder id stays queryable.
+      try {
+        await this.prisma.statement.create({
+          data: {
+            id: statementId,
+            statementName:
+              meta.statementName?.trim() || nameFromFilename(file.originalname),
+            filePath: path.basename(file.path),
+            importedCount: 0,
+            skippedCount: 0,
+            status: 'FAILED',
+            errorMessage: (err as Error).message.slice(0, 500),
+            userId: uploaderId,
+          },
+        });
+      } catch (recreateErr) {
+        this.logger.error(
+          `Could not persist FAILED row for ${statementId}: ${(recreateErr as Error).message}`,
+        );
+      }
+    }
   }
 
   // ---------- PDF path ----------

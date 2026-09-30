@@ -238,6 +238,21 @@ model Statement {
   importedCount   Int      @default(0)
   skippedCount    Int      @default(0)
 
+  // Processing lifecycle. Long-running AI extraction runs async so the
+  // upload endpoint returns instantly; the frontend polls for status.
+  //   PROCESSING — statement row exists, file is on disk, worker is
+  //                either parsing or waiting to parse.
+  //   COMPLETED  — parse succeeded, transactions are visible.
+  //   FAILED     — parse threw; errorMessage carries the reason.
+  status          String   @default("COMPLETED")   // default = legacy sync path
+  errorMessage    String?
+
+  // SHA-256 hex of the uploaded file's bytes. Uploading the same PDF
+  // twice returns a friendly "already processed" response instead of
+  // silently creating a duplicate statement. Non-null only for rows
+  // created via the new async upload path.
+  fileHash        String?
+
   transactions    Transaction[]
   advances        CardAdvance[]
 
@@ -246,6 +261,9 @@ model Statement {
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([fileHash])
+  @@index([status])
 }
 
 // An employee-submitted invoice (the proof-of-purchase side).

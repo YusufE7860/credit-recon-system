@@ -465,6 +465,9 @@ export default function UploadPage() {
     }
   }
 
+  // Progress messaging shown while background parse runs.
+  const [statementProgress, setStatementProgress] = useState<string>('');
+
   async function uploadStatement() {
     if (!statementFile) {
       setError('Pick a file first');
@@ -473,24 +476,85 @@ export default function UploadPage() {
     setBusy(true);
     setError('');
     setSuccessMsg('');
+    setStatementProgress('Uploading file...');
     const fd = new FormData();
     fd.append('file', statementFile);
     for (const [k, v] of Object.entries(statementMeta)) {
       if (v) fd.append(k, v);
     }
     try {
-      const result = await apiUpload<{
-        importedCount: number;
-        skippedCount: number;
-      }>('/statements/upload', fd);
-      setSuccessMsg(
-        `Statement uploaded — imported ${result.importedCount} transactions, skipped ${result.skippedCount}.`,
+      // Backend now returns a placeholder statement immediately with
+      // status=PROCESSING, then continues parsing in the background.
+      // We poll /statements/:id/status until it flips to COMPLETED
+      // (or FAILED). No browser timeout, no user re-uploading because
+      // "it looks like nothing happened".
+      const created = await apiUpload<{ id: string; status: string }>(
+        '/statements/upload',
+        fd,
       );
-      setStatementFile(null);
+      setStatementProgress('File received — parsing with AI (this can take 1–2 minutes)...');
+
+      // Poll every 3 seconds, cap at 10 minutes just in case.
+      const startedAt = Date.now();
+      const POLL_MS = 3000;
+      const MAX_MS = 10 * 60 * 1000;
+      let final: {
+        status: string;
+        importedCount?: number;
+        skippedCount?: number;
+        errorMessage?: string | null;
+      } | null = null;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        const now = Date.now();
+        if (now - startedAt > MAX_MS) {
+          throw new Error(
+            'Parse is taking longer than 10 minutes. Check the Statements page — it may still finish.',
+          );
+        }
+        try {
+          const status = await api<{
+            status: string;
+            importedCount?: number;
+            skippedCount?: number;
+            errorMessage?: string | null;
+          }>(`/statements/${created.id}/status`);
+          if (status.status === 'PROCESSING') {
+            const secs = Math.round((now - startedAt) / 1000);
+            setStatementProgress(`Still parsing (${secs}s elapsed)…`);
+            continue;
+          }
+          final = status;
+          break;
+        } catch (pollErr) {
+          // Transient network hiccup — keep polling, don't crash the flow.
+          console.warn('Poll failed, retrying:', pollErr);
+        }
+      }
+
+      if (!final) throw new Error('Polling ended without a result');
+      if (final.status === 'COMPLETED') {
+        setSuccessMsg(
+          `Statement imported — ${final.importedCount ?? 0} transactions, ${final.skippedCount ?? 0} skipped.`,
+        );
+        setStatementFile(null);
+      } else if (final.status === 'FAILED') {
+        throw new Error(
+          final.errorMessage ?? 'Statement parsing failed on the server.',
+        );
+      } else if (final.status === 'NOT_FOUND') {
+        throw new Error(
+          'Uploaded statement disappeared before it finished processing. Please try again.',
+        );
+      } else {
+        throw new Error(`Unexpected status: ${final.status}`);
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Upload failed');
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
     } finally {
       setBusy(false);
+      setStatementProgress('');
     }
   }
 
@@ -938,12 +1002,29 @@ export default function UploadPage() {
               </p>
             )}
 
+            {/* Live progress line while background parse is running.
+                Set by the polling loop in uploadStatement(). Reassures
+                the user something is happening and stops them from
+                re-uploading (which would trip the file-hash dedupe
+                anyway, but the message is still confusing). */}
+            {busy && statementProgress && (
+              <div className="text-sm bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded">
+                <p className="font-semibold flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 border-2 border-amber-800 border-t-transparent rounded-full animate-spin" />
+                  {statementProgress}
+                </p>
+                <p className="text-xs mt-1 text-amber-800">
+                  Please stay on this page. Large multi-card statements can take up to two minutes.
+                </p>
+              </div>
+            )}
+
             <button
               onClick={uploadStatement}
               disabled={busy || !statementFile}
               className="w-full bg-black text-white py-3 rounded-lg font-medium hover:opacity-90 disabled:opacity-40 transition"
             >
-              {busy ? 'Uploading...' : 'Upload statement'}
+              {busy ? 'Parsing… please wait' : 'Upload statement'}
             </button>
           </div>
         )}

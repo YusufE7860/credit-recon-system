@@ -57,6 +57,14 @@ export class StatementsController {
     return this.statementsService.getById(id, user);
   }
 
+  // Lightweight polling endpoint. Returns just the fields the upload
+  // page needs while it's waiting for background processing to finish.
+  // Frontend polls every 2–3s until status !== PROCESSING.
+  @Get(':id/status')
+  getStatus(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.statementsService.getStatus(id, user);
+  }
+
   // Stream the original PDF/CSV back to the browser. Browsers display
   // PDFs inline; CSVs trigger a download. Used by the "View PDF" button
   // on the Reports > Statements tab.
