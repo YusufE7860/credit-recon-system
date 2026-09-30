@@ -42,6 +42,56 @@ export class CardsController {
     return this.cardsService.getLiveSpend(user);
   }
 
+  // ---------- Advances ----------
+
+  // GET /cards/:id/advances — every top-up recorded on this card.
+  @Get(':id/advances')
+  listAdvances(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.cardsService.listAdvancesForCard(id, user);
+  }
+
+  // POST /cards/:id/advances — record an OFF-STATEMENT advance
+  // (money the business transferred onto the card outside a
+  // statement's own credit lines). Body: { amount, occurredAt,
+  // sourceRef?, notes? }. Admin/reporting only.
+  @Post(':id/advances')
+  @Roles(Role.ADMIN, Role.REPORTING)
+  createAdvance(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      amount: number;
+      occurredAt: string;
+      sourceRef?: string;
+      notes?: string;
+    },
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.cardsService.createAdvance(
+      {
+        cardId: id,
+        amount: body.amount,
+        occurredAt: body.occurredAt,
+        sourceRef: body.sourceRef ?? null,
+        notes: body.notes ?? null,
+      },
+      user,
+    );
+  }
+
+  // DELETE /cards/advances/:advanceId — remove a recorded advance.
+  // Note: the URL is /cards/advances/:advanceId (not nested under
+  // /cards/:cardId/) so the caller doesn't need to know the parent
+  // card id to reverse a mistake.
+  @Delete('advances/:advanceId')
+  @Roles(Role.ADMIN, Role.REPORTING)
+  deleteAdvance(
+    @Param('advanceId') advanceId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.cardsService.deleteAdvance(advanceId, user);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.cardsService.getCardById(id, user);

@@ -85,6 +85,7 @@ model User {
   auditLogs         AuditLog[]
   notifications     Notification[]
   reconReports      ReconReport[] @relation("ReconReportFor")
+  advancesRecorded  CardAdvance[] @relation("advancesRecorded")
   reconReportsRun   ReconReport[] @relation("ReconReportBy")
   uploadedInvoices  Invoice[]     @relation("InvoiceUploader")
 
@@ -129,8 +130,51 @@ model Card {
   creditLimit    Float?
   createdAt      DateTime @default(now())
 
+  advances       CardAdvance[]
+
   @@index([last4])
   @@index([cardholderName])
+}
+
+// A cash advance / top-up / transfer INTO a card, typically applied
+// when a cardholder is close to the credit limit and the business
+// funds the card externally so they can keep spending. It's NOT a
+// Transaction — no matching invoice is expected, no reconciliation
+// runs on it, and it doesn't count as "spend" anywhere.
+//
+// Effect on the live-spend tracker:
+//   available = creditLimit + Σ(advances in cycle) − Σ(purchases in cycle)
+//
+// Source of these rows is either:
+//   1. Auto-created by the AI statement parser when it spots a credit
+//      line on the statement that looks like a top-up/payment.
+//   2. Manually added by an admin for off-statement transfers.
+model CardAdvance {
+  id             String   @id @default(uuid())
+
+  cardId         String
+  card           Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  amount         Float               // positive number — the amount added
+  occurredAt     DateTime            // date the money hit the card
+  sourceRef      String?             // e.g. "EFT REF ABC123", "Cash deposit branch"
+  notes          String?             // free-text reason / audit trail
+
+  // Optional link to the statement it was parsed from. Null when the
+  // advance was added manually by an admin (off-statement transfer).
+  statementId    String?
+  statement      Statement? @relation(fields: [statementId], references: [id], onDelete: SetNull)
+
+  // Who recorded the advance. For AI-parsed rows this is the uploader
+  // of the statement; for manual entries it's the admin who added it.
+  recordedById   String
+  recordedBy     User @relation("advancesRecorded", fields: [recordedById], references: [id])
+
+  createdAt      DateTime @default(now())
+
+  @@index([cardId])
+  @@index([occurredAt])
+  @@index([statementId])
 }
 
 // A line item from a credit card statement (what the bank says you spent).
@@ -195,6 +239,7 @@ model Statement {
   skippedCount    Int      @default(0)
 
   transactions    Transaction[]
+  advances        CardAdvance[]
 
   userId          String   // who uploaded it
   user            User     @relation(fields: [userId], references: [id])

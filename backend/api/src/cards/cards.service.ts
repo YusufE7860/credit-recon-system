@@ -330,6 +330,80 @@ export class CardsService {
   // during the current billing cycle draw down the limit; the moment a
   // new statement is uploaded, lastCycleEnd moves forward and the
   // counter effectively resets.
+  // ---------- Advances (top-ups / cash injections) ----------
+
+  // List every advance for a card, newest first. Visible to any admin
+  // or reporting user; regular users only see advances on their own
+  // assigned cards.
+  async listAdvancesForCard(cardId: string, currentUser: JwtUser) {
+    const card = await this.prisma.card.findUnique({ where: { id: cardId } });
+    if (!card) throw new NotFoundException('Card not found');
+    if (
+      !isPrivileged(currentUser.role) &&
+      card.assignedUserId !== currentUser.sub
+    ) {
+      throw new ForbiddenException('You cannot view advances on this card');
+    }
+    return this.prisma.cardAdvance.findMany({
+      where: { cardId },
+      orderBy: { occurredAt: 'desc' },
+      include: {
+        recordedBy: { select: { id: true, name: true, email: true } },
+        statement: { select: { id: true, statementName: true } },
+      },
+    });
+  }
+
+  // Admin/reporting-only: record an off-statement advance. AI-parsed
+  // advances come in via the statement upload path and set statementId;
+  // manual entries leave it null so the source is distinguishable.
+  async createAdvance(
+    input: {
+      cardId: string;
+      amount: number;
+      occurredAt: string;      // YYYY-MM-DD
+      sourceRef?: string | null;
+      notes?: string | null;
+    },
+    currentUser: JwtUser,
+  ) {
+    if (!isPrivileged(currentUser.role)) {
+      throw new ForbiddenException('Only admins can record advances');
+    }
+    if (!input.amount || input.amount <= 0) {
+      throw new BadRequestException('Advance amount must be a positive number');
+    }
+    const card = await this.prisma.card.findUnique({
+      where: { id: input.cardId },
+    });
+    if (!card) throw new NotFoundException('Card not found');
+
+    return this.prisma.cardAdvance.create({
+      data: {
+        cardId: input.cardId,
+        amount: input.amount,
+        occurredAt: new Date(input.occurredAt),
+        sourceRef: input.sourceRef?.trim() || null,
+        notes: input.notes?.trim() || null,
+        // statementId stays null — this is a manual entry, not parsed
+        // from a statement upload.
+        recordedById: currentUser.sub,
+      },
+    });
+  }
+
+  async deleteAdvance(advanceId: string, currentUser: JwtUser) {
+    if (!isPrivileged(currentUser.role)) {
+      throw new ForbiddenException('Only admins can delete advances');
+    }
+    const advance = await this.prisma.cardAdvance.findUnique({
+      where: { id: advanceId },
+    });
+    if (!advance) throw new NotFoundException('Advance not found');
+    await this.prisma.cardAdvance.delete({ where: { id: advanceId } });
+    return { success: true };
+  }
+
   async getLiveSpend(currentUser: JwtUser) {
     const scopedToSelf = !isPrivileged(currentUser.role);
     const cardWhere = scopedToSelf
@@ -409,9 +483,25 @@ export class CardsService {
           }
         }
 
+        // Advances that landed AFTER the last cycle ended (so they're
+        // relevant to the current cycle's spending power). Older
+        // advances were already reflected on prior statements and
+        // reset the balance from the bank's side, so we don't count
+        // them again.
+        const advanceAgg = await this.prisma.cardAdvance.aggregate({
+          _sum: { amount: true },
+          where: {
+            cardId: card.id,
+            ...(cycleEnd ? { occurredAt: { gt: cycleEnd } } : {}),
+          },
+        });
+        const advancesThisCycle = advanceAgg._sum.amount ?? 0;
+
+        // Available = creditLimit + advances − liveSpend.
+        // Clamped at 0 so a maxed-out card doesn't render as negative.
         const available =
           card.creditLimit != null
-            ? Math.max(0, card.creditLimit - liveSpend)
+            ? Math.max(0, card.creditLimit + advancesThisCycle - liveSpend)
             : null;
 
         return {
@@ -423,6 +513,9 @@ export class CardsService {
           creditLimit: card.creditLimit,
           lastCycleEnd: cycleEnd ? cycleEnd.toISOString() : null,
           liveSpend,
+          // New: separate field so the UI can show "R X advanced" next
+          // to the spend bar without having to derive it.
+          advancesThisCycle,
           available,
         };
       }),

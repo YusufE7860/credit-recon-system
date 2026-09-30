@@ -8,8 +8,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   PdfParserService,
   ParsedCardSection,
+  ParsedStatement,
   looksLikeBankFee,
 } from './pdf-parser.service';
+import {
+  AIStatementExtractorService,
+  AIStatementResult,
+  AIStatementRow,
+} from './ai-statement-extractor.service';
 import { ReconciliationService } from '../reconciliation/reconciliation.service';
 import { MailerService } from '../mailer/mailer.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
@@ -109,7 +115,122 @@ export class StatementsService {
     // because nothing was calling the matcher.
     private reconciliation: ReconciliationService,
     private mailer: MailerService,
+    private aiStatement: AIStatementExtractorService,
   ) {}
+
+  // Try AI extraction first; if it fails or the API key isn't
+  // configured, fall back to the regex parser. Returns a ParsedStatement
+  // (the shape the rest of the importer already expects) plus a list of
+  // ADVANCE rows the AI classified — those need CardAdvance records
+  // rather than Transactions.
+  private async parseStatementSmart(
+    filePath: string,
+  ): Promise<{
+    parsed: ParsedStatement;
+    advances: Array<{
+      cardLast4: string;
+      date: Date;
+      amount: number;      // positive amount
+      sourceRef: string;
+    }>;
+    source: 'ai' | 'regex';
+  }> {
+    if (this.aiStatement.isAvailable()) {
+      try {
+        const ai = await this.aiStatement.extract(filePath);
+        this.logger.log(
+          `AI statement extraction: ${ai.cards.length} card sections, confidence ${(ai.confidence * 100).toFixed(0)}%`,
+        );
+        return {
+          parsed: this.aiToParsedStatement(ai),
+          advances: this.extractAdvancesFromAI(ai),
+          source: 'ai',
+        };
+      } catch (err) {
+        this.logger.warn(
+          `AI statement extraction failed — falling back to regex: ${(err as Error).message}`,
+        );
+      }
+    }
+    // Regex fallback (existing pipeline).
+    const parsed = await this.pdfParser.parseStatement(filePath);
+    return { parsed, advances: [], source: 'regex' };
+  }
+
+  // Look up a Card by last4. Used when persisting AI-classified
+  // advances against a specific card. Returns null when no card
+  // matches (advances for unknown cards are logged + skipped).
+  private async findCardByLast4(last4: string) {
+    const clean = last4.trim();
+    if (!clean) return null;
+    return this.prisma.card.findFirst({
+      where: { last4: clean },
+      // If multiple cards share last4 (rare but possible after a
+      // re-issue), prefer one that has an assigned user.
+      orderBy: [{ assignedUserId: 'desc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  // Convert the AI's per-row output into the ParsedStatement shape that
+  // importCardSection() expects. We DROP rows that shouldn't become
+  // transactions (ADVANCE — those become CardAdvance rows instead;
+  // PAYMENT — a bookkeeping entry between statements, not a real
+  // spend). Everything else (PURCHASE, REFUND, FEE, INTEREST, OTHER)
+  // becomes a Transaction, with sign preserved.
+  private aiToParsedStatement(ai: AIStatementResult): ParsedStatement {
+    return {
+      statementDate: ai.statementDate ? new Date(ai.statementDate) : null,
+      parentAccount: ai.parentAccount,
+      bankStatedTotal: ai.bankStatedTotal,
+      rawTextLength: ai.rawJson.length,
+      warnings: ai.warnings,
+      cards: ai.cards.map((c) => ({
+        last4: c.last4,
+        maskedNumber: c.maskedNumber,
+        cardholderName: c.cardholderName,
+        creditLimit: c.creditLimit,
+        transactions: c.rows
+          .filter((r) => r.kind !== 'ADVANCE' && r.kind !== 'PAYMENT')
+          .map((r) => ({
+            date: new Date(r.date),
+            merchant: r.merchant,
+            location: r.location,
+            amount: r.amount,
+            isFee: r.kind === 'FEE' || r.kind === 'INTEREST',
+          })),
+      })),
+    };
+  }
+
+  // Pull out the ADVANCE-classified rows across every card section.
+  // Amount is normalized to a positive number for CardAdvance (the
+  // AI sign convention has ADVANCE as negative, since it reduces the
+  // amount owed — but a CardAdvance record is naturally positive).
+  private extractAdvancesFromAI(ai: AIStatementResult): Array<{
+    cardLast4: string;
+    date: Date;
+    amount: number;
+    sourceRef: string;
+  }> {
+    const out: Array<{
+      cardLast4: string;
+      date: Date;
+      amount: number;
+      sourceRef: string;
+    }> = [];
+    for (const c of ai.cards) {
+      for (const r of c.rows) {
+        if (r.kind !== 'ADVANCE') continue;
+        out.push({
+          cardLast4: c.last4,
+          date: new Date(r.date),
+          amount: Math.abs(r.amount),
+          sourceRef: r.location ? `${r.merchant} · ${r.location}` : r.merchant,
+        });
+      }
+    }
+    return out;
+  }
 
   // After a statement is imported (and auto-recon has run), email each
   // cardholder whose card appears on it with their still-unmatched
@@ -508,7 +629,12 @@ export class StatementsService {
     meta: UploadStatementMeta,
     uploaderId: string,
   ) {
-    const parsed = await this.pdfParser.parseStatement(file.path);
+    // AI first, regex fallback. `advances` is a list of AI-classified
+    // ADVANCE rows that need CardAdvance records (not Transactions).
+    const { parsed, advances, source } = await this.parseStatementSmart(file.path);
+    this.logger.log(
+      `Statement parsed via ${source}: ${parsed.cards.length} cards, ${advances.length} advance(s)`,
+    );
 
     let totalImported = 0;
     let totalSkipped = 0;
@@ -634,6 +760,41 @@ export class StatementsService {
           `Statement ${statement.id}: net matches bank stated total exactly (${parsed.bankStatedTotal.toFixed(2)})`,
         );
       }
+    }
+
+    // Persist any advances the AI classified. Resolves each to a Card
+    // by last4 (uses the same lookup helper used for transactions).
+    // Fire per row rather than createMany so we can attach the right
+    // cardId — advances need to point at a specific Card row.
+    if (advances.length > 0) {
+      for (const a of advances) {
+        try {
+          const card = await this.findCardByLast4(a.cardLast4);
+          if (!card) {
+            this.logger.warn(
+              `Statement ${statement.id}: advance for last4=${a.cardLast4} skipped — no matching card`,
+            );
+            continue;
+          }
+          await this.prisma.cardAdvance.create({
+            data: {
+              cardId: card.id,
+              amount: a.amount,
+              occurredAt: a.date,
+              sourceRef: a.sourceRef,
+              statementId: statement.id,
+              recordedById: uploaderId,
+            },
+          });
+        } catch (err) {
+          this.logger.warn(
+            `Statement ${statement.id}: failed to persist advance for last4=${a.cardLast4}: ${(err as Error).message}`,
+          );
+        }
+      }
+      this.logger.log(
+        `Statement ${statement.id}: persisted ${advances.length} advance record(s)`,
+      );
     }
 
     // Auto-run reconciliation across the statement's period. Critical
