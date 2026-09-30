@@ -332,6 +332,42 @@ export class CardsService {
   // counter effectively resets.
   // ---------- Advances (top-ups / cash injections) ----------
 
+  // List every advance across all cards a user is assigned to.
+  // Used by the admin user-profile page's "Cash Advances" section.
+  // Non-privileged callers can only fetch their own advances.
+  async listAdvancesForUser(userId: string, currentUser: JwtUser) {
+    if (
+      !isPrivileged(currentUser.role) &&
+      userId !== currentUser.sub
+    ) {
+      throw new ForbiddenException('You cannot view advances for this user');
+    }
+    const cards = await this.prisma.card.findMany({
+      where: { assignedUserId: userId },
+      select: { id: true, cardName: true, last4: true, creditLimit: true },
+    });
+    if (cards.length === 0) return [];
+    const cardIds = cards.map((c) => c.id);
+    const advances = await this.prisma.cardAdvance.findMany({
+      where: { cardId: { in: cardIds } },
+      orderBy: { occurredAt: 'desc' },
+      include: {
+        recordedBy: { select: { id: true, name: true, email: true } },
+        statement: { select: { id: true, statementName: true } },
+        // Card info comes via a manual join below for a leaner payload
+        // than Prisma's `include: { card: true }` would produce.
+      },
+    });
+    // Attach a slim card summary to each row so the UI can group /
+    // display "Card XXXX 4009 · Yaasir · R 135 000" without a second
+    // round trip per row.
+    const cardById = new Map(cards.map((c) => [c.id, c]));
+    return advances.map((a) => ({
+      ...a,
+      card: cardById.get(a.cardId) ?? null,
+    }));
+  }
+
   // List every advance for a card, newest first. Visible to any admin
   // or reporting user; regular users only see advances on their own
   // assigned cards.

@@ -71,7 +71,28 @@ type LiveSpendRow = {
   creditLimit: number | null;
   lastCycleEnd: string | null;
   liveSpend: number;
+  advancesThisCycle?: number;  // R value of top-ups since last cycle end
   available: number | null;
+};
+
+// Row shape returned by GET /cards/user/:userId/advances. Slim card
+// summary is attached server-side so we can group the list without a
+// second round-trip.
+type AdvanceRow = {
+  id: string;
+  amount: number;
+  occurredAt: string;
+  sourceRef: string | null;
+  notes: string | null;
+  createdAt: string;
+  card: {
+    id: string;
+    cardName: string;
+    last4: string | null;
+    creditLimit: number | null;
+  } | null;
+  recordedBy: { id: string; name: string; email: string } | null;
+  statement: { id: string; statementName: string } | null;
 };
 
 type StatementOption = {
@@ -112,6 +133,7 @@ export default function UserProfilePage() {
   const [current, setCurrent] = useState<Summary | null>(null);
   const [previous, setPrevious] = useState<Summary | null>(null);
   const [liveSpend, setLiveSpend] = useState<LiveSpendRow[]>([]);
+  const [advances, setAdvances] = useState<AdvanceRow[]>([]);
   const [statements, setStatements] = useState<StatementOption[]>([]);
   const [selectedStatementId, setSelectedStatementId] = useState<string>('');
   const [from, setFrom] = useState<string>('');
@@ -127,17 +149,24 @@ export default function UserProfilePage() {
     let cancelled = false;
     (async () => {
       try {
-        const [prof, stmts, liveAll] = await Promise.all([
+        const [prof, stmts, liveAll, advs] = await Promise.all([
           api<UserProfile>(`/users/${userId}`),
           api<StatementOption[]>('/statements'),
           api<LiveSpendRow[]>('/cards/live-spend').catch(
             () => [] as LiveSpendRow[],
+          ),
+          // Every advance across all cards assigned to this user.
+          // Empty on backends that predate the endpoint — treated as
+          // "no advances yet" rather than surfacing an error.
+          api<AdvanceRow[]>(`/cards/user/${userId}/advances`).catch(
+            () => [] as AdvanceRow[],
           ),
         ]);
         if (cancelled) return;
         setProfile(prof);
         setStatements(stmts);
         setLiveSpend(liveAll.filter((c) => c.assignedUserId === userId));
+        setAdvances(advs);
         // Pick the latest statement with a period as the default range.
         const dated = stmts
           .filter((s) => s.periodStart && s.periodEnd)
@@ -394,10 +423,75 @@ export default function UserProfilePage() {
                         ? `Since ${new Date(c.lastCycleEnd).toLocaleDateString('en-ZA')}`
                         : 'No prior cycle'}
                     </p>
+                    {/* Advances-this-cycle chip. Only rendered when
+                        non-zero — most cards have none. Shows how much
+                        the business has topped this card up SINCE the
+                        last statement closed, which is what boosts
+                        `available` above pure creditLimit − liveSpend. */}
+                    {c.advancesThisCycle != null && c.advancesThisCycle > 0 && (
+                      <p className="text-xs mt-1 inline-block px-2 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">
+                        + {fmtZAR(c.advancesThisCycle)} advanced this cycle
+                      </p>
+                    )}
                   </div>
                 );
               })}
             </div>
+          )}
+        </section>
+
+        {/* Cash Advances — every top-up recorded on this user's cards.
+            Includes both statement-parsed FNB Online Banking Transfers
+            AND manual admin entries for off-statement transfers.
+            Empty state when the user has never had an advance. */}
+        <section className="bg-white rounded-xl shadow p-4">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-600 uppercase tracking-wider">
+              Cash advances ({advances.length})
+            </h2>
+            {advances.length > 0 && (
+              <p className="text-xs text-gray-500">
+                Total: {fmtZAR(advances.reduce((s, a) => s + a.amount, 0))}
+              </p>
+            )}
+          </div>
+          {advances.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              No advances recorded on this user&apos;s cards.
+            </p>
+          ) : (
+            <ul className="divide-y divide-gray-100 text-sm">
+              {advances.map((a) => (
+                <li key={a.id} className="py-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className="text-gray-500 text-xs whitespace-nowrap">
+                    {new Date(a.occurredAt).toLocaleDateString('en-ZA')}
+                  </span>
+                  <span className="font-semibold whitespace-nowrap">
+                    {fmtZAR(a.amount)}
+                  </span>
+                  <span className="text-gray-700 truncate flex-1 min-w-0">
+                    {a.card?.cardName ?? 'Unknown card'}
+                    {a.card?.last4 && (
+                      <span className="text-gray-400"> …{a.card.last4}</span>
+                    )}
+                  </span>
+                  {a.sourceRef && (
+                    <span className="text-xs text-gray-500 truncate max-w-[240px]">
+                      {a.sourceRef}
+                    </span>
+                  )}
+                  {a.statement ? (
+                    <span className="text-[10px] uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
+                      from statement
+                    </span>
+                  ) : (
+                    <span className="text-[10px] uppercase tracking-wider text-amber-800 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                      manual
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </section>
 

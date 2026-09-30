@@ -140,6 +140,7 @@ export default function Dashboard() {
     creditLimit: number | null;
     lastCycleEnd: string | null;
     liveSpend: number;
+    advancesThisCycle?: number;
     available: number | null;
   };
   const [liveSpend, setLiveSpend] = useState<LiveSpendRow[]>([]);
@@ -488,6 +489,16 @@ export default function Dashboard() {
                           </span>
                         )}
                       </p>
+                      {/* Advances-this-cycle chip. Only shown when the
+                          card has received a top-up this cycle — the
+                          "available" number above already includes it,
+                          this chip just makes clear WHY the number is
+                          higher than creditLimit − spend. */}
+                      {c.advancesThisCycle != null && c.advancesThisCycle > 0 && (
+                        <p className="text-[10px] mt-1 inline-block px-1.5 py-0.5 rounded bg-green-50 text-green-700 border border-green-200">
+                          + {fmtZAR(c.advancesThisCycle)} advanced this cycle
+                        </p>
+                      )}
                     </>
                   );
                   return clickable ? (

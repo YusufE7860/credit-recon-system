@@ -50,6 +50,17 @@ export class CardsController {
     return this.cardsService.listAdvancesForCard(id, user);
   }
 
+  // GET /cards/user/:userId/advances — every top-up across all cards
+  // assigned to a user. Used by the admin user-profile page's
+  // "Cash Advances" section.
+  @Get('user/:userId/advances')
+  listAdvancesByUser(
+    @Param('userId') userId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.cardsService.listAdvancesForUser(userId, user);
+  }
+
   // POST /cards/:id/advances — record an OFF-STATEMENT advance
   // (money the business transferred onto the card outside a
   // statement's own credit lines). Body: { amount, occurredAt,
