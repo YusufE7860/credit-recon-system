@@ -193,6 +193,38 @@ export class StatementsService {
           )
           .join(', ');
         this.logger.log(`AI row breakdown by kind: ${kindReport}`);
+
+        // Dump the top 20 largest PURCHASE rows from the AI — this
+        // reveals what's getting classified as spend when it shouldn't
+        // be. If we see "Payment Received" or "Balance Transferred"
+        // in this list, the prompt/filter isn't catching those exact
+        // strings. If we see very-large legitimate merchant names,
+        // the AI is right and the regex is wrong.
+        const allPurchases: Array<{
+          card: string;
+          date: string;
+          merchant: string;
+          amount: number;
+        }> = [];
+        for (const c of ai.cards) {
+          for (const r of c.rows) {
+            if (r.kind === 'PURCHASE') {
+              allPurchases.push({
+                card: c.last4,
+                date: r.date,
+                merchant: r.merchant,
+                amount: r.amount,
+              });
+            }
+          }
+        }
+        allPurchases.sort((a, b) => b.amount - a.amount);
+        this.logger.log('AI top 20 PURCHASE rows (largest first):');
+        for (const p of allPurchases.slice(0, 20)) {
+          this.logger.log(
+            `  R${p.amount.toFixed(2).padStart(12)} · card ${p.card} · ${p.date} · "${p.merchant}"`,
+          );
+        }
         if (suspiciousRows.length > 0) {
           this.logger.warn(
             `AI mis-classified rows (${suspiciousRows.length} rows that look like payments/transfers but weren't PAYMENT/ADVANCE):`,
