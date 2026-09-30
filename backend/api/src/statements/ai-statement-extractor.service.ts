@@ -137,14 +137,14 @@ The following are NOT transactions and must NEVER become rows in your output:
 
 6. **Current Interest Rates table, Interest on Credit Balance, "we will sweep the amount"** — informational text on page 1. Skip.
 
-7. **Account Summary block** on page 1 — the box with "Credit Facility / Balance Brought Forward / Payment Received / Sub Total / Transactions / Amount Owing". Use ONLY the "Transactions" cell value (assign it to `bankStatedTotal`). Do not turn any of the other cells into rows.
+7. **Account Summary block** on page 1 — the box with "Credit Facility / Balance Brought Forward / Payment Received / Sub Total / Transactions / Amount Owing". Use ONLY the "Transactions" cell value (assign it to bankStatedTotal). Do not turn any of the other cells into rows.
 
 Only extract rows from the per-card transaction listings — the tables that follow each "**** ####  - Limits" card header and end with a "Card Total" line.
 
 ## Self-validation
 
 After extracting, mentally sum every row's amount across all cards.
-The sum SHOULD approximately equal `bankStatedTotal` (within a few thousand rand for VAT-on-fees and interest rounding). If your sum is more than ~5% off from `bankStatedTotal`, something has been double-counted or an ignored section has leaked in — re-check the "ignore" list above.
+The sum SHOULD approximately equal bankStatedTotal (within a few thousand rand for VAT-on-fees and interest rounding). If your sum is more than ~5% off from bankStatedTotal, something has been double-counted or an ignored section has leaked in — re-check the "ignore" list above.
 
 ## Multi-line merchants
 
