@@ -239,18 +239,20 @@ export class StatementsService {
           }
         }
 
-        // Sanity check — sum every purchase-ish row and compare to
-        // the bank's stated total. If they disagree by more than 10%
-        // the AI has almost certainly leaked in something it should
-        // have ignored (the Expense Summary table, historical months,
-        // Balance Brought Forward etc.). Reject and fall back to
-        // regex rather than persisting garbage totals.
+        // Sanity check — the bank's "Transactions" total is the net of
+        // every SIGNED row on the statement: purchases, refunds AND
+        // advances (FNB transfers Cr etc.). Advances reduce the balance
+        // owed even though we store them separately, so they belong in
+        // the comparison sum. PAYMENT rows are the ONE exception —
+        // they're customer payments against last cycle's Amount Owing,
+        // reported separately on page 1 as "Payment Received", and
+        // not part of the "Transactions" total.
         if (ai.bankStatedTotal != null) {
           const sum = ai.cards.reduce(
             (acc, c) =>
               acc +
               c.rows
-                .filter((r) => r.kind !== 'ADVANCE' && r.kind !== 'PAYMENT')
+                .filter((r) => r.kind !== 'PAYMENT')
                 .reduce((s, r) => s + r.amount, 0),
             0,
           );
