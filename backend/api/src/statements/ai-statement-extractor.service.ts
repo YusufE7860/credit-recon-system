@@ -316,20 +316,52 @@ export class AIStatementExtractorService {
         ? (parsed as { rows: unknown[] }).rows
         : [];
 
-    return (rowsArray as Array<Record<string, unknown>>).map((r) => ({
-      date: typeof r.date === 'string' ? r.date : '',
-      merchant:
-        typeof r.merchant === 'string' ? r.merchant : 'Unknown merchant',
-      location: typeof r.location === 'string' ? r.location : null,
-      amount: typeof r.amount === 'number' ? r.amount : 0,
-      kind:
-        typeof r.kind === 'string' &&
-        ['PURCHASE', 'REFUND', 'FEE', 'PAYMENT', 'ADVANCE', 'INTEREST', 'OTHER'].includes(
-          r.kind,
-        )
-          ? (r.kind as StatementRowKind)
-          : 'OTHER',
-    }));
+    const coerced: AIStatementRow[] = (rowsArray as Array<Record<string, unknown>>).map(
+      (r) => ({
+        date: typeof r.date === 'string' ? r.date : '',
+        merchant:
+          typeof r.merchant === 'string' ? r.merchant : 'Unknown merchant',
+        location: typeof r.location === 'string' ? r.location : null,
+        amount: typeof r.amount === 'number' ? r.amount : 0,
+        kind:
+          typeof r.kind === 'string' &&
+          ['PURCHASE', 'REFUND', 'FEE', 'PAYMENT', 'ADVANCE', 'INTEREST', 'OTHER'].includes(
+            r.kind,
+          )
+            ? (r.kind as StatementRowKind)
+            : 'OTHER',
+      }),
+    );
+
+    // Defensive scrub: the AI ignores our "skip these rows" instructions
+    // maybe 15% of the time. When it does, Balance Transferred / Payment
+    // Received rows get flagged as PURCHASE with a positive amount,
+    // inflating the statement total by tens of thousands. We strip them
+    // here based on the merchant text — cheaper and more reliable than
+    // an extra AI call to re-classify.
+    const BOOKKEEPING_PATTERNS = [
+      /balance\s*transfer/i,       // "Balance Transferred"
+      /balance\s*brought\s*forward/i,
+      /payment\s*received/i,       // "Payment Received - Thank you"
+      /payment\s*-?\s*thank\s*you/i,
+      /thank\s*you.*payment/i,
+      /^payment$/i,
+      /previous\s*balance/i,
+      /credit\s*adjustment/i,
+      /card\s*total/i,             // shouldn't reach here but paranoia
+    ];
+    return coerced.filter((r) => {
+      const isBookkeeping = BOOKKEEPING_PATTERNS.some((re) =>
+        re.test(r.merchant),
+      );
+      if (isBookkeeping) {
+        this.logger.debug?.(
+          `Filtered bookkeeping row: card ${last4} "${r.merchant}" R ${r.amount.toFixed(2)} (${r.kind})`,
+        );
+        return false;
+      }
+      return true;
+    });
   }
 
   // Small helper — process an array with bounded parallelism. Prevents
