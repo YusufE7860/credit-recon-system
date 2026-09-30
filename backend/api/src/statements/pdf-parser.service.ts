@@ -106,9 +106,106 @@ const MONTHS: Record<string, number> = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
+// Raw text output shape — used by the chunked AI extractor.
+export interface RawStatementSections {
+  statementDate: Date | null;
+  parentAccount: string | null;
+  bankStatedTotal: number | null;
+  sections: Array<{
+    last4: string;
+    maskedNumber: string;
+    cardholderName: string;
+    creditLimit: number | null;
+    // The raw text lines that appear BETWEEN this card's header and
+    // the next card header (or end of statement). Includes the "Card
+    // Total" line as a sentinel. This is what the AI sees per call.
+    rawText: string;
+  }>;
+}
+
 @Injectable()
 export class PdfParserService {
   private readonly logger = new Logger(PdfParserService.name);
+
+  // Extract the raw per-card text ranges from a PDF, without trying to
+  // parse individual transaction rows. Feeds the chunked AI extractor
+  // — each card section becomes its own small AI call so the whole
+  // statement is done in parallel small chunks instead of one 60k-token
+  // whale that times out.
+  async extractRawSections(filePath: string): Promise<RawStatementSections> {
+    const buffer = fs.readFileSync(filePath);
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    const result = await parser.getText();
+    const text = result.text;
+
+    const statementDate = this.extractStatementDate(text);
+    const parentAccount = this.extractParentAccount(text);
+    const bankStatedTotal = this.extractBankStatedTotal(text);
+
+    const lines = text.split(/\r?\n/);
+    // First pass: find every card-header line index and its metadata.
+    // We keep the raw index so we can slice ranges below.
+    const headers: Array<{
+      idx: number;
+      last4: string;
+      maskedNumber: string;
+      creditLimit: number | null;
+    }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].trim().match(CARD_HEADER_RE);
+      if (m) {
+        const maskedNumber = m[1].replace(/\s+/g, ' ');
+        headers.push({
+          idx: i,
+          last4: maskedNumber.slice(-4),
+          maskedNumber,
+          creditLimit: this.parseAmount(m[2]),
+        });
+      }
+    }
+
+    const sections: RawStatementSections['sections'] = [];
+    for (let h = 0; h < headers.length; h++) {
+      const cur = headers[h];
+      const next = headers[h + 1];
+      // Slice from just after the header to just before the next header
+      // (or end of document). If we hit "Closing Balance" first, stop
+      // there — everything past is footer.
+      const rangeEnd = (() => {
+        const raw = next ? next.idx : lines.length;
+        for (let i = cur.idx + 1; i < raw; i++) {
+          if (/^closing balance/i.test(lines[i].trim())) return i;
+        }
+        return raw;
+      })();
+      const sectionLines = lines.slice(cur.idx, rangeEnd);
+      // The cardholder name is the first non-empty line after the
+      // header that looks like a name.
+      const cardholderName =
+        sectionLines
+          .slice(1)
+          .map((l) => l.trim())
+          .find((l) => l && this.looksLikeName(l)) ?? 'Unknown';
+      sections.push({
+        last4: cur.last4,
+        maskedNumber: cur.maskedNumber,
+        cardholderName,
+        creditLimit: cur.creditLimit,
+        rawText: sectionLines.join('\n'),
+      });
+    }
+
+    this.logger.log(
+      `Raw section extraction: ${sections.length} card sections found`,
+    );
+
+    return {
+      statementDate,
+      parentAccount,
+      bankStatedTotal,
+      sections,
+    };
+  }
 
   // Read a PDF file from disk and parse it into structured card sections.
   async parseStatement(filePath: string): Promise<ParsedStatement> {

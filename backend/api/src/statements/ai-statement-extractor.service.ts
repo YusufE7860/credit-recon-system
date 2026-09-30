@@ -1,31 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
-import * as fs from 'fs';
 import { SettingsService } from '../settings/settings.service';
+import { PdfParserService } from './pdf-parser.service';
 
-// AI-driven credit-card statement parser.
+// AI-driven credit-card statement parser — chunked per card section.
 //
-// Sends the full statement PDF to Claude vision and gets back a
-// structured JSON breakdown: one card section per plastic on the
-// account, transactions with signed amounts, and — crucially —
-// classified rows so we can distinguish between:
+// Architecture:
+//   1. Regex parser (PdfParserService.extractRawSections) finds every
+//      card header in the PDF and gives us the raw text lines between
+//      each header pair. Regex is reliable at finding boundaries even
+//      when it fumbles individual transaction row parsing.
+//   2. For each card section (usually 5–30 rows of text), we make a
+//      small AI call to Haiku that extracts clean structured rows.
+//   3. All section calls run in parallel with a small concurrency cap
+//      so we don't hammer the API rate limit.
+//   4. Statement-level metadata (bankStatedTotal, periodStart etc.)
+//      comes from the regex parser too — no separate AI call needed.
 //
-//   - PURCHASE      : normal debit, needs an invoice
-//   - REFUND        : credit from a merchant, don't need to chase
-//   - FEE           : bank-imposed charge (lounge, slow-pmt, VAT on fees, int)
-//   - PAYMENT       : cardholder / company paying the card off
-//   - ADVANCE       : cash/EFT deposit *into* the card (creates a
-//                     CardAdvance row rather than a Transaction)
-//   - INTEREST      : bank interest charge
-//   - OTHER         : anything ambiguous — flagged for admin review
+// Why chunked instead of whole-PDF?
+//   - A 36-card statement produces 40–60k output tokens in one call.
+//     That trips the SDK's "may take >10 min" streaming requirement,
+//     is slow (3–5 minutes), and exposes us to prompt drift where the
+//     AI leaks in Expense Summary rows or bookkeeping lines.
+//   - Per section: ~500 tokens in, ~2000 tokens out, ~3–5s. 36 sections
+//     in parallel take ~10s wall time. Cheaper too — Haiku is 20x
+//     cheaper than Sonnet for the same job.
 //
-// Advantages over the regex parser:
-//   - Handles new statement layouts without code changes
-//   - Reads cardholder names printed anywhere on the section header
-//   - Understands narrative rows (multi-line merchant descriptions)
-//   - Correctly signs credit lines regardless of "Cr" suffix quirks
-//   - Distinguishes advances from purchases even when the bank uses
-//     the same "PAYMENT RECEIVED" wording for both
+// Row classification the model produces (schema unchanged):
+//   PURCHASE | REFUND | FEE | PAYMENT | ADVANCE | INTEREST | OTHER
 
 export type StatementRowKind =
   | 'PURCHASE'
@@ -46,54 +48,40 @@ export interface AIStatementRow {
 
 export interface AIStatementCard {
   last4: string;
-  maskedNumber: string;      // e.g. "4228 24** **** 7005"
+  maskedNumber: string;
   cardholderName: string;
   creditLimit: number | null;
   rows: AIStatementRow[];
 }
 
 export interface AIStatementResult {
-  statementDate: string | null;   // ISO YYYY-MM-DD — the header date
+  statementDate: string | null;
   periodStart: string | null;
   periodEnd: string | null;
   parentAccount: string | null;
-  bankStatedTotal: number | null; // "Transactions" total from page 1
+  bankStatedTotal: number | null;
   cards: AIStatementCard[];
-  confidence: number;             // 0..1 self-reported by the model
-  rawJson: string;                // full response, kept for audit
+  confidence: number;
+  rawJson: string;
   warnings: string[];
 }
 
-const SYSTEM_PROMPT = `You extract structured data from South African credit card statements. Return ONLY a JSON object — no markdown fences, no commentary.
+// Per-card extraction prompt. Deliberately narrow: this call sees ONE
+// card's raw text and returns its rows. No Expense Summary risk, no
+// bookkeeping-row confusion — those live on other pages the model
+// never sees on this call.
+const CARD_SECTION_PROMPT = `You extract transaction rows from ONE card section of a South African FNB business credit card statement. Return ONLY a JSON array of rows — no wrapping object, no markdown fences, no commentary.
 
-Output schema:
+Each row schema:
 {
-  "statementDate": string | null,       // ISO YYYY-MM-DD, the header/issue date
-  "periodStart": string | null,          // ISO YYYY-MM-DD, statement period start
-  "periodEnd": string | null,            // ISO YYYY-MM-DD, statement period end
-  "parentAccount": string | null,        // e.g. "8812 7100 5898 3003"
-  "bankStatedTotal": number | null,      // the "Transactions" summary total on page 1
-  "cards": [
-    {
-      "last4": string,                   // "7005"
-      "maskedNumber": string,            // "4228 24** **** 7005"
-      "cardholderName": string,          // exactly as printed
-      "creditLimit": number | null,      // ZAR, if a per-card limit is shown
-      "rows": [
-        {
-          "date": string,                // ISO YYYY-MM-DD (use the statement year context)
-          "merchant": string,            // combine merchant + narrative into one clean string
-          "location": string | null,     // suburb/city if separable, else null
-          "amount": number,              // see sign rules below
-          "kind": "PURCHASE" | "REFUND" | "FEE" | "PAYMENT" | "ADVANCE" | "INTEREST" | "OTHER"
-        }
-      ]
-    }
-  ],
-  "confidence": number                   // 0..1, your honest confidence
+  "date": string,          // ISO YYYY-MM-DD (use the year passed in the user message)
+  "merchant": string,      // clean merchant name; multi-word merchants stay together (see rules)
+  "location": string | null,  // suburb/city if separable, else null
+  "amount": number,        // signed (see sign rules)
+  "kind": "PURCHASE" | "REFUND" | "FEE" | "PAYMENT" | "ADVANCE" | "INTEREST" | "OTHER"
 }
 
-## Sign convention (IMPORTANT)
+## Sign convention
 
 Positive amounts INCREASE what the cardholder owes the bank:
   - PURCHASE, FEE, INTEREST → positive
@@ -101,81 +89,69 @@ Positive amounts INCREASE what the cardholder owes the bank:
 Negative amounts DECREASE what the cardholder owes:
   - REFUND, PAYMENT, ADVANCE → negative
 
-Never emit "Cr" suffixes, brackets, or currency symbols in the amount — pure JSON numbers only, signed.
+Never emit "Cr" suffixes, brackets, or currency symbols. Pure JSON numbers only.
+
+## Merchant parsing (CRITICAL — this is where the regex parser fails)
+
+FNB prints each row as columns:
+    27 Aug Shell Protea Gardens                     Lenasia                             1 320.70          0.00
+
+That's three columns: merchant name | location | amount | facility.
+The merchant name can be MULTIPLE WORDS separated by spaces. Do NOT chop it after the first word.
+
+Correct extraction:
+  merchant: "Shell Protea Gardens", location: "Lenasia", amount: 1320.70
+
+Common examples where the regex parser gets this wrong (fix them):
+  - "Shell Protea Gardens" → merchant "Shell Protea Gardens" (not "Shell")
+  - "The Bread Mill" → merchant "The Bread Mill" (not "The Bread")
+  - "King Shaka Tapngo" → merchant "King Shaka Tapngo" (not "King")
+  - "Admiral Platform" → merchant "Admiral Platform" (not "Admiral")
+  - "Yoco *Ny Slice Flori" → merchant "Yoco *Ny Slice Flori" (leave the *)
+  - "Anthropic* Claude Sub" → merchant "Anthropic* Claude Sub", location "Anthropic.Com", ignore trailing "CA" (that's the currency country code)
+  - "Github, Inc. Github.Com" → merchant "Github, Inc.", location "Github.Com"
+
+When a foreign-currency line follows (like "U.S. Dollar 180.00"), that's a continuation of the previous row — ignore it, don't emit a separate row for it.
 
 ## Kind classification
 
-- PURCHASE: normal card swipe / online purchase at a merchant
-- REFUND: merchant reversal of a specific purchase (e.g. "Refund: Woolworths Sandton")
-- FEE: bank-imposed charge — service fee, cash-withdrawal fee, slow-payment fee, VAT on fees, monthly card fee, "int-pymt", lounge access fee, currency conversion fee
-- PAYMENT: cardholder paid the card off (e.g. "Payment received - thank you", "EFT PAYMENT RECEIVED - THANK YOU")
-- ADVANCE: cash/EFT deposit that adds funds TO the card so the cardholder can keep spending. Wording: "CASH ADVANCE", "TRANSFER RECEIVED", "TOP UP", "LOAD", "DEPOSIT". If the row wording is genuinely ambiguous between PAYMENT and ADVANCE, prefer PAYMENT.
-- INTEREST: "Interest charged", "Debit interest"
-- OTHER: any row you can't confidently classify — the admin will review
+- PURCHASE: normal merchant charge
+- REFUND: merchant reversal of a specific purchase (line labelled with the merchant + "Cr" suffix meaning reversal)
+- FEE: bank charge — "service fee", "cash withdrawal fee", "slow payment fee", "VAT on fees", "int-pymt", "monthly card fee", "lounge access", "currency conversion fee"
+- PAYMENT: the customer paying the card off ("Payment received", "EFT PAYMENT RECEIVED")
+- ADVANCE: money loaded ONTO the card by the business so the cardholder can keep spending — "CASH ADVANCE", "TRANSFER RECEIVED", "TOP UP", "LOAD", "DEPOSIT"
+- INTEREST: "Interest charged"
+- OTHER: use only when the row is unclassifiable — admin will review
 
-## Card section handling
+## Rows to IGNORE (do NOT emit)
 
-- Each plastic on the account has its own section starting with a header like "4228 24** **** 7005   - Limits   40000.00   0.00"
-- The cardholder name appears near the section header — usually the line above or below
-- The credit limit is the first number in the "- Limits" line
-- Group all rows under their card section
-- If a row could belong to more than one card (rare — usually only "Account-level fees" or shared VAT), attach it to the card whose section it appears IN
-
-## CRITICAL — sections and rows to IGNORE entirely
-
-The following are NOT transactions and must NEVER become rows in your output:
-
-1. **Expense Summary / Category Analysis table** — a big grid near the front (usually page 2) with columns for the current month PLUS 12–13 prior months (SEP 2026, Average, SEP 2025, OCT 2025, ...). Row labels look like "Airlines", "Hotels", "Retail", "Vehicle Expenses", "Fuel", "Fees", "VAT", "Total Expenses". Every number in this table is a HISTORICAL SUMMARY. Skip the whole table. If you accidentally include even a few cells the statement total will be off by hundreds of thousands.
-
-2. **Balance Brought Forward** — the balance carried over from last statement. Not a transaction.
-
-3. **Payment Received** — the customer paying last statement's bill. Not a transaction, not a PAYMENT-kind row, not anything — skip.
-
-4. **Balance Transferred / Balance Transfer** — a bookkeeping move between cards on the same account. Not a purchase, not an advance. Skip.
-
-5. **Sub Total, Amount Owing, Card Total, Facility Total** — summary/rollup lines. Skip.
-
-6. **Current Interest Rates table, Interest on Credit Balance, "we will sweep the amount"** — informational text on page 1. Skip.
-
-7. **Account Summary block** on page 1 — the box with "Credit Facility / Balance Brought Forward / Payment Received / Sub Total / Transactions / Amount Owing". Use ONLY the "Transactions" cell value (assign it to bankStatedTotal). Do not turn any of the other cells into rows.
-
-Only extract rows from the per-card transaction listings — the tables that follow each "**** ####  - Limits" card header and end with a "Card Total" line.
-
-## Self-validation
-
-After extracting, mentally sum every row's amount across all cards.
-The sum SHOULD approximately equal bankStatedTotal (within a few thousand rand for VAT-on-fees and interest rounding). If your sum is more than ~5% off from bankStatedTotal, something has been double-counted or an ignored section has leaked in — re-check the "ignore" list above.
-
-## Multi-line merchants
-
-Some rows print merchant + descriptor on separate lines:
-  "Payfast*Go Gadgets"
-  "  Somerset West"
-
-Combine into merchant="Payfast*Go Gadgets" location="Somerset West".
-
-If the merchant string is only a reference like "Ref 5522 Jhb" with no merchant name, use merchant="Unknown merchant" and put the reference in location.
+- The card header line "**** **** **** ####  - Limits" — that's metadata, not a row.
+- The cardholder name line under the header.
+- "Balance Brought Forward" — bookkeeping, not a transaction.
+- "Balance Transferred" — a move of debt between cards on the same account. NOT a refund. NOT an advance. Skip entirely.
+- "Card Total" — a rollup, not a row.
+- Page footers with "8812 7100 5898" and "BUSINESS STATEMENT" — statement chrome.
+- Continuation lines like "U.S. Dollar 23.00" or the cardholder's name repeated mid-section — these are metadata for the previous row.
+- Any line with only a reference code and no amount — those are metadata.
 
 ## Dates
 
-Statements print dates as "15 Apr" without a year. Use the statement's periodStart/periodEnd or statementDate to derive the correct year. When December/January boundary is ambiguous, prefer the year that keeps rows inside [periodStart, periodEnd].
+Dates print as "27 Aug" without the year. Use the year supplied in the user message. If a row is dated December while the rest are September, it's back-dated — that's fine, keep the December date but use the same year.
 
-## bankStatedTotal
-
-Look for a line on page 1 labelled "Transactions" that gives the total for the statement (typically appears in a summary box). This is the bank's authoritative total for the whole account — use it as-is (positive number).
-
-## Data hygiene
-
-- Deduplicate identical consecutive rows only when the statement clearly has a printing artifact — otherwise keep both
-- Never invent transactions
-- If you can't read a value confidently, leave it null rather than guess`;
+Return an empty array [] if the section has no real transactions.`;
 
 @Injectable()
 export class AIStatementExtractorService {
   private readonly logger = new Logger(AIStatementExtractorService.name);
   private client: Anthropic | null = null;
+  // Cap parallel per-card AI calls so we don't hit Anthropic's rate limit
+  // on a 36-card statement. 8 is comfortable for most orgs.
+  private readonly CONCURRENCY = 8;
 
-  constructor(private settings: SettingsService) {}
+  constructor(
+    private settings: SettingsService,
+    private pdfParser: PdfParserService,
+  ) {}
 
   isAvailable(): boolean {
     if (this.client) return true;
@@ -189,174 +165,197 @@ export class AIStatementExtractorService {
     if (!this.isAvailable()) {
       throw new Error('AI statement extractor not configured (no API key)');
     }
-    const buffer = fs.readFileSync(pdfPath);
-    const base64 = buffer.toString('base64');
 
-    const fileBlock: Anthropic.ContentBlockParam = {
-      type: 'document',
-      source: {
-        type: 'base64',
-        media_type: 'application/pdf',
-        data: base64,
-      },
-    };
+    // Step 1 — regex-parse the PDF to find the card section boundaries
+    // and the statement-level metadata. No AI here, no per-row parsing.
+    const raw = await this.pdfParser.extractRawSections(pdfPath);
+    if (raw.sections.length === 0) {
+      throw new Error(
+        'PDF has no recognizable card sections (regex found zero headers).',
+      );
+    }
+    this.logger.log(
+      `Chunked AI extraction: ${raw.sections.length} card sections to process`,
+    );
 
-    // Statements are far more complex than a single receipt, so we
-    // default to Sonnet as primary (Haiku often misses cardholder
-    // names printed in unusual positions). Admin can override.
-    const primaryModel = this.settings.getString(
+    // Step 2 — pick model. Per-card calls are text-only and small, so
+    // Haiku is the right default (fast, cheap). Admin can override.
+    const model = this.settings.getString(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       'ai.statementModel' as any,
-      'claude-sonnet-4-6',
+      'claude-haiku-4-5-20251001',
     );
 
+    const year =
+      raw.statementDate?.getFullYear() ?? new Date().getFullYear();
+
+    // Step 3 — extract every section in parallel with a concurrency cap.
     const start = Date.now();
-    // We MUST stream when max_tokens is high enough that the SDK
-    // estimates the request could take >10 minutes — the non-stream
-    // API is refused pre-emptively with a "Streaming is required"
-    // error. Streaming also gives us the option of a progress log
-    // line in the future without changing anything else.
-    const stream = this.client!.messages.stream({
-      model: primaryModel,
-      // Sonnet supports up to 64k output tokens. Big multi-card
-      // statements (30+ cards, hundreds of rows) can produce a JSON
-      // payload of 40–60k tokens; anything less risks truncation.
-      max_tokens: 64000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            fileBlock,
-            {
-              type: 'text',
-              text: 'Extract the full statement. Return ONE JSON object matching the schema exactly.',
-            },
-          ],
-        },
-      ],
-    });
-    // finalMessage() waits for the whole stream to complete and
-    // returns the same message shape as the non-stream create().
-    const response = await stream.finalMessage();
+    const cards = await this.mapWithConcurrency(
+      raw.sections,
+      this.CONCURRENCY,
+      async (section) => {
+        try {
+          const rows = await this.extractSection(model, section, year);
+          return {
+            last4: section.last4,
+            maskedNumber: section.maskedNumber,
+            cardholderName: section.cardholderName,
+            creditLimit: section.creditLimit,
+            rows,
+          };
+        } catch (err) {
+          this.logger.warn(
+            `Section ${section.last4} (${section.cardholderName}) failed: ${(err as Error).message}`,
+          );
+          // Return the section with an empty row list rather than
+          // failing the whole statement — statement-level fallback
+          // will pick up the slack for this card.
+          return {
+            last4: section.last4,
+            maskedNumber: section.maskedNumber,
+            cardholderName: section.cardholderName,
+            creditLimit: section.creditLimit,
+            rows: [] as AIStatementRow[],
+          };
+        }
+      },
+    );
     const durationMs = Date.now() - start;
+    const totalRows = cards.reduce((acc, c) => acc + c.rows.length, 0);
+    this.logger.log(
+      `Chunked AI extraction complete: ${durationMs}ms, ${totalRows} rows across ${cards.length} cards`,
+    );
+
+    return {
+      statementDate: raw.statementDate
+        ? raw.statementDate.toISOString().slice(0, 10)
+        : null,
+      // Periods: derive from min/max transaction date if the header
+      // doesn't hand them to us. FNB doesn't print explicit period
+      // boundaries in the header — the statement DATE is the closing
+      // date and the period is the prior ~30 days.
+      periodStart: null,
+      periodEnd: raw.statementDate
+        ? raw.statementDate.toISOString().slice(0, 10)
+        : null,
+      parentAccount: raw.parentAccount,
+      bankStatedTotal: raw.bankStatedTotal,
+      cards,
+      confidence: 0.9,
+      rawJson: JSON.stringify({ chunked: true, sections: cards.length }),
+      warnings: [],
+    };
+  }
+
+  // Extract one card section's rows via a single AI call.
+  private async extractSection(
+    model: string,
+    section: {
+      last4: string;
+      cardholderName: string;
+      rawText: string;
+    },
+    year: number,
+  ): Promise<AIStatementRow[]> {
+    const userMessage =
+      `Card last4: ${section.last4}\n` +
+      `Cardholder: ${section.cardholderName}\n` +
+      `Year context for dates: ${year}\n\n` +
+      `Section text:\n\n${section.rawText}`;
+
+    const response = await this.client!.messages.create({
+      model,
+      max_tokens: 8000, // generous for a single card section
+      system: CARD_SECTION_PROMPT,
+      messages: [{ role: 'user', content: userMessage }],
+    });
+
     const textBlock = response.content.find((b) => b.type === 'text');
     const rawText = textBlock && textBlock.type === 'text' ? textBlock.text : '';
-    this.logger.log(
-      `AI statement extraction (${primaryModel}): ${durationMs}ms, ` +
-        `${response.usage.input_tokens} in / ${response.usage.output_tokens} out tokens` +
-        ` (stop=${response.stop_reason})`,
-    );
+    return this.parseRowsResponse(rawText, section.last4);
+  }
 
-    // If the model hit the token cap the JSON will be truncated and
-    // unparseable — surface a clearer error so ops knows to bump
-    // max_tokens rather than chase a phantom parsing bug.
-    if (response.stop_reason === 'max_tokens') {
+  // Parse the AI's response into a row array. Robust to a leading
+  // sentence, markdown fences, and a top-level object with a "rows"
+  // key (models sometimes wrap despite instructions).
+  private parseRowsResponse(raw: string, last4: string): AIStatementRow[] {
+    let cleaned = raw.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    }
+    // Find the first [ or { and last ] or }
+    const bracketStart = cleaned.indexOf('[');
+    const braceStart = cleaned.indexOf('{');
+    let jsonText: string;
+    if (bracketStart !== -1 && (braceStart === -1 || bracketStart < braceStart)) {
+      const end = cleaned.lastIndexOf(']');
+      jsonText = cleaned.slice(bracketStart, end + 1);
+    } else if (braceStart !== -1) {
+      const end = cleaned.lastIndexOf('}');
+      jsonText = cleaned.slice(braceStart, end + 1);
+    } else {
       throw new Error(
-        `AI statement extractor: output truncated at max_tokens (${response.usage.output_tokens}). ` +
-          `Statement is too large for a single call — increase max_tokens or split by card section.`,
+        `Card ${last4}: response was not JSON-shaped: ${raw.slice(0, 100)}`,
       );
     }
 
-    return this.parseResponse(rawText);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (err) {
+      throw new Error(
+        `Card ${last4}: invalid JSON — ${(err as Error).message}`,
+      );
+    }
+
+    // Accept either [rows...] or { rows: [...] }
+    const rowsArray = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { rows?: unknown }).rows)
+        ? (parsed as { rows: unknown[] }).rows
+        : [];
+
+    return (rowsArray as Array<Record<string, unknown>>).map((r) => ({
+      date: typeof r.date === 'string' ? r.date : '',
+      merchant:
+        typeof r.merchant === 'string' ? r.merchant : 'Unknown merchant',
+      location: typeof r.location === 'string' ? r.location : null,
+      amount: typeof r.amount === 'number' ? r.amount : 0,
+      kind:
+        typeof r.kind === 'string' &&
+        ['PURCHASE', 'REFUND', 'FEE', 'PAYMENT', 'ADVANCE', 'INTEREST', 'OTHER'].includes(
+          r.kind,
+        )
+          ? (r.kind as StatementRowKind)
+          : 'OTHER',
+    }));
   }
 
-  // ---------- Private ----------
+  // Small helper — process an array with bounded parallelism. Prevents
+  // 36 simultaneous API calls on a big statement.
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
 
   private getApiKey(): string | undefined {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fromSettings = this.settings.getString('ai.anthropicKey' as any, '');
     if (fromSettings) return fromSettings;
     return process.env.ANTHROPIC_API_KEY;
-  }
-
-  private parseResponse(raw: string): AIStatementResult {
-    let cleaned = raw.trim();
-    if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
-    }
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end === -1 || end <= start) {
-      throw new Error(
-        `AI statement extractor: response was not JSON-shaped: ${raw.slice(0, 200)}...`,
-      );
-    }
-    const jsonText = cleaned.slice(start, end + 1);
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch (err) {
-      throw new Error(
-        `AI statement extractor: invalid JSON — ${(err as Error).message}: ${jsonText.slice(0, 200)}`,
-      );
-    }
-
-    const warnings: string[] = [];
-    const cards = Array.isArray(parsed.cards)
-      ? (parsed.cards as Array<Record<string, unknown>>).map((c) =>
-          this.coerceCard(c, warnings),
-        )
-      : [];
-
-    return {
-      statementDate: typeof parsed.statementDate === 'string' ? parsed.statementDate : null,
-      periodStart: typeof parsed.periodStart === 'string' ? parsed.periodStart : null,
-      periodEnd: typeof parsed.periodEnd === 'string' ? parsed.periodEnd : null,
-      parentAccount:
-        typeof parsed.parentAccount === 'string' ? parsed.parentAccount : null,
-      bankStatedTotal:
-        typeof parsed.bankStatedTotal === 'number' ? parsed.bankStatedTotal : null,
-      cards,
-      confidence:
-        typeof parsed.confidence === 'number'
-          ? Math.max(0, Math.min(1, parsed.confidence))
-          : 0.5,
-      rawJson: jsonText,
-      warnings,
-    };
-  }
-
-  private coerceCard(
-    raw: Record<string, unknown>,
-    warnings: string[],
-  ): AIStatementCard {
-    const last4 = typeof raw.last4 === 'string' ? raw.last4 : '';
-    if (!last4) warnings.push('Card section returned with no last4');
-    const rows = Array.isArray(raw.rows)
-      ? (raw.rows as Array<Record<string, unknown>>).map((r) =>
-          this.coerceRow(r, warnings),
-        )
-      : [];
-    return {
-      last4,
-      maskedNumber:
-        typeof raw.maskedNumber === 'string' ? raw.maskedNumber : `**** **** **** ${last4}`,
-      cardholderName:
-        typeof raw.cardholderName === 'string' ? raw.cardholderName : 'Unknown',
-      creditLimit: typeof raw.creditLimit === 'number' ? raw.creditLimit : null,
-      rows,
-    };
-  }
-
-  private coerceRow(
-    raw: Record<string, unknown>,
-    warnings: string[],
-  ): AIStatementRow {
-    const kind =
-      typeof raw.kind === 'string' &&
-      ['PURCHASE', 'REFUND', 'FEE', 'PAYMENT', 'ADVANCE', 'INTEREST', 'OTHER'].includes(
-        raw.kind,
-      )
-        ? (raw.kind as StatementRowKind)
-        : 'OTHER';
-    if (kind === 'OTHER') warnings.push('Row classified as OTHER — admin review needed');
-    return {
-      date: typeof raw.date === 'string' ? raw.date : '',
-      merchant: typeof raw.merchant === 'string' ? raw.merchant : 'Unknown merchant',
-      location: typeof raw.location === 'string' ? raw.location : null,
-      amount: typeof raw.amount === 'number' ? raw.amount : 0,
-      kind,
-    };
   }
 }
