@@ -188,7 +188,12 @@ export class AIStatementExtractorService {
     const start = Date.now();
     const response = await this.client!.messages.create({
       model: primaryModel,
-      max_tokens: 16000,     // statements can be long — hundreds of rows
+      // Sonnet supports up to 64k output tokens. Big multi-card
+      // statements (30+ cards, hundreds of rows) can produce a JSON
+      // payload of 40–60k tokens; anything less risks truncation
+      // mid-array which is unrecoverable. 16k was too tight and got
+      // us cut off on a 36-card FNB statement.
+      max_tokens: 64000,
       system: SYSTEM_PROMPT,
       messages: [
         {
@@ -208,8 +213,19 @@ export class AIStatementExtractorService {
     const rawText = textBlock && textBlock.type === 'text' ? textBlock.text : '';
     this.logger.log(
       `AI statement extraction (${primaryModel}): ${durationMs}ms, ` +
-        `${response.usage.input_tokens} in / ${response.usage.output_tokens} out tokens`,
+        `${response.usage.input_tokens} in / ${response.usage.output_tokens} out tokens` +
+        ` (stop=${response.stop_reason})`,
     );
+
+    // If the model hit the token cap the JSON will be truncated and
+    // unparseable — surface a clearer error so ops knows to bump
+    // max_tokens rather than chase a phantom parsing bug.
+    if (response.stop_reason === 'max_tokens') {
+      throw new Error(
+        `AI statement extractor: output truncated at max_tokens (${response.usage.output_tokens}). ` +
+          `Statement is too large for a single call — increase max_tokens or split by card section.`,
+      );
+    }
 
     return this.parseResponse(rawText);
   }
