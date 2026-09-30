@@ -1078,7 +1078,18 @@ export class StatementsService {
         _sum: { amount: true },
         where: { statementId: statement.id },
       });
-      const capturedNet = parsedNet._sum.amount ?? 0;
+      // Advances live in a separate CardAdvance table (not Transaction),
+      // but the bank's "Transactions" figure treats them as signed
+      // credits that reduce the balance owed. To compute the residual
+      // correctly we need to fold their signed contribution back in —
+      // CardAdvance.amount is stored as a positive number by convention,
+      // so we SUBTRACT it here to get the credit-side contribution.
+      const advanceAgg = await this.prisma.cardAdvance.aggregate({
+        _sum: { amount: true },
+        where: { statementId: statement.id },
+      });
+      const advancesTotal = advanceAgg._sum.amount ?? 0;
+      const capturedNet = (parsedNet._sum.amount ?? 0) - advancesTotal;
       const residual = parsed.bankStatedTotal - capturedNet;
       if (Math.abs(residual) > 1) {
         await this.prisma.transaction.create({
