@@ -143,6 +143,35 @@ export class StatementsService {
         this.logger.log(
           `AI statement extraction: ${ai.cards.length} card sections, confidence ${(ai.confidence * 100).toFixed(0)}%`,
         );
+
+        // Sanity check — sum every purchase-ish row and compare to
+        // the bank's stated total. If they disagree by more than 10%
+        // the AI has almost certainly leaked in something it should
+        // have ignored (the Expense Summary table, historical months,
+        // Balance Brought Forward etc.). Reject and fall back to
+        // regex rather than persisting garbage totals.
+        if (ai.bankStatedTotal != null) {
+          const sum = ai.cards.reduce(
+            (acc, c) =>
+              acc +
+              c.rows
+                .filter((r) => r.kind !== 'ADVANCE' && r.kind !== 'PAYMENT')
+                .reduce((s, r) => s + r.amount, 0),
+            0,
+          );
+          const drift = Math.abs(sum - ai.bankStatedTotal);
+          const driftPct = (drift / ai.bankStatedTotal) * 100;
+          this.logger.log(
+            `AI statement sanity check: rows sum R ${sum.toFixed(2)} vs bank stated R ${ai.bankStatedTotal.toFixed(2)} (drift ${driftPct.toFixed(1)}%)`,
+          );
+          if (driftPct > 10) {
+            throw new Error(
+              `AI extraction rejected — row sum R ${sum.toFixed(2)} is off by ${driftPct.toFixed(0)}% from bank total R ${ai.bankStatedTotal.toFixed(2)}. ` +
+                `AI probably included the Expense Summary table or bookkeeping rows.`,
+            );
+          }
+        }
+
         return {
           parsed: this.aiToParsedStatement(ai),
           advances: this.extractAdvancesFromAI(ai),

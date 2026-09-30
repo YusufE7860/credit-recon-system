@@ -121,6 +121,31 @@ Never emit "Cr" suffixes, brackets, or currency symbols in the amount — pure J
 - Group all rows under their card section
 - If a row could belong to more than one card (rare — usually only "Account-level fees" or shared VAT), attach it to the card whose section it appears IN
 
+## CRITICAL — sections and rows to IGNORE entirely
+
+The following are NOT transactions and must NEVER become rows in your output:
+
+1. **Expense Summary / Category Analysis table** — a big grid near the front (usually page 2) with columns for the current month PLUS 12–13 prior months (SEP 2026, Average, SEP 2025, OCT 2025, ...). Row labels look like "Airlines", "Hotels", "Retail", "Vehicle Expenses", "Fuel", "Fees", "VAT", "Total Expenses". Every number in this table is a HISTORICAL SUMMARY. Skip the whole table. If you accidentally include even a few cells the statement total will be off by hundreds of thousands.
+
+2. **Balance Brought Forward** — the balance carried over from last statement. Not a transaction.
+
+3. **Payment Received** — the customer paying last statement's bill. Not a transaction, not a PAYMENT-kind row, not anything — skip.
+
+4. **Balance Transferred / Balance Transfer** — a bookkeeping move between cards on the same account. Not a purchase, not an advance. Skip.
+
+5. **Sub Total, Amount Owing, Card Total, Facility Total** — summary/rollup lines. Skip.
+
+6. **Current Interest Rates table, Interest on Credit Balance, "we will sweep the amount"** — informational text on page 1. Skip.
+
+7. **Account Summary block** on page 1 — the box with "Credit Facility / Balance Brought Forward / Payment Received / Sub Total / Transactions / Amount Owing". Use ONLY the "Transactions" cell value (assign it to `bankStatedTotal`). Do not turn any of the other cells into rows.
+
+Only extract rows from the per-card transaction listings — the tables that follow each "**** ####  - Limits" card header and end with a "Card Total" line.
+
+## Self-validation
+
+After extracting, mentally sum every row's amount across all cards.
+The sum SHOULD approximately equal `bankStatedTotal` (within a few thousand rand for VAT-on-fees and interest rounding). If your sum is more than ~5% off from `bankStatedTotal`, something has been double-counted or an ignored section has leaked in — re-check the "ignore" list above.
+
 ## Multi-line merchants
 
 Some rows print merchant + descriptor on separate lines:
