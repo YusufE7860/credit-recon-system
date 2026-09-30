@@ -176,6 +176,14 @@ export default function Dashboard() {
     try {
       const params = new URLSearchParams({ from, to });
       if (filterUserId) params.set('userId', filterUserId);
+      // When a statement is picked from the dropdown, pin the scope
+      // to that statement's transactions instead of using the date
+      // range. This avoids double-counting when statement periods
+      // overlap (a late-dated refund with an Aug transactionDate
+      // sitting on the Sep statement would otherwise show up in both
+      // views under a date-range filter). Backend prefers statementId
+      // over from/to for transaction figures when set.
+      if (selectedStatementId) params.set('statementId', selectedStatementId);
       // Parallel — summary + live-spend refresh together on any change.
       const [data, ls] = await Promise.all([
         api<Summary>(`/dashboard/summary?${params.toString()}`),
@@ -244,7 +252,7 @@ export default function Dashboard() {
     setLoading(true);
     loadSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, filterUserId, defaultsApplied]);
+  }, [from, to, filterUserId, defaultsApplied, selectedStatementId]);
 
   // Recon is now triggered from Reports > Recon tab. The dashboard
   // is read-only.

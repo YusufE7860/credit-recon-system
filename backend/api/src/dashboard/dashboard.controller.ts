@@ -21,7 +21,13 @@ export class DashboardController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('userId') userId?: string,
+    @Query('statementId') statementId?: string,
   ) {
-    return this.dashboardService.getSummary(user, { from, to, userId });
+    return this.dashboardService.getSummary(user, {
+      from,
+      to,
+      userId,
+      statementId,
+    });
   }
 }

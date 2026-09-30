@@ -74,6 +74,15 @@ export interface SummaryOptions {
   // spend. Ignored for non-privileged callers (they're already scoped
   // to themselves by role).
   userId?: string;
+  // When set, we pin the transaction scope to a SPECIFIC statement's
+  // rows rather than to a date range. This avoids double-counting
+  // when statement periods overlap (e.g. a late-dated refund on the
+  // Sep statement that carries an Aug transaction date). If the
+  // frontend passes a statementId, that beats the from/to date filter
+  // for the transaction figures — the date range is still used for
+  // invoice-side aggregates because invoices aren't tied to a
+  // specific statement.
+  statementId?: string;
 }
 
 @Injectable()
@@ -99,10 +108,24 @@ export class DashboardService {
     const effectiveUserId = scopedToSelf
       ? currentUser.sub
       : options.userId ?? null;
-    const txFilter: Prisma.TransactionWhereInput = {
-      transactionDate: { gte: from, lte: to },
-      ...(effectiveUserId ? { userId: effectiveUserId } : {}),
-    };
+    // Transaction scope:
+    //   - When a statementId is pinned, ignore the date range entirely
+    //     and use the statement's own rows. This is the ONLY safe way
+    //     to reconcile against the bank's stated total when statement
+    //     periods overlap (a late-dated refund on the Sep statement
+    //     can carry an Aug transactionDate — the date filter would
+    //     then also sweep it into the Aug view).
+    //   - Otherwise the caller wants a period-scoped view; use the
+    //     date range as before.
+    const txFilter: Prisma.TransactionWhereInput = options.statementId
+      ? {
+          statementId: options.statementId,
+          ...(effectiveUserId ? { userId: effectiveUserId } : {}),
+        }
+      : {
+          transactionDate: { gte: from, lte: to },
+          ...(effectiveUserId ? { userId: effectiveUserId } : {}),
+        };
     // Invoices are dated by invoiceDate (the date on the invoice
     // itself, not when it was uploaded) — matches how the user thinks
     // about "March's spend" regardless of upload lag.

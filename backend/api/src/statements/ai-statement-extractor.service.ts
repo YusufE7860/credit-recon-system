@@ -211,13 +211,16 @@ export class AIStatementExtractorService {
     );
 
     const start = Date.now();
-    const response = await this.client!.messages.create({
+    // We MUST stream when max_tokens is high enough that the SDK
+    // estimates the request could take >10 minutes — the non-stream
+    // API is refused pre-emptively with a "Streaming is required"
+    // error. Streaming also gives us the option of a progress log
+    // line in the future without changing anything else.
+    const stream = this.client!.messages.stream({
       model: primaryModel,
       // Sonnet supports up to 64k output tokens. Big multi-card
       // statements (30+ cards, hundreds of rows) can produce a JSON
-      // payload of 40–60k tokens; anything less risks truncation
-      // mid-array which is unrecoverable. 16k was too tight and got
-      // us cut off on a 36-card FNB statement.
+      // payload of 40–60k tokens; anything less risks truncation.
       max_tokens: 64000,
       system: SYSTEM_PROMPT,
       messages: [
@@ -233,6 +236,9 @@ export class AIStatementExtractorService {
         },
       ],
     });
+    // finalMessage() waits for the whole stream to complete and
+    // returns the same message shape as the non-stream create().
+    const response = await stream.finalMessage();
     const durationMs = Date.now() - start;
     const textBlock = response.content.find((b) => b.type === 'text');
     const rawText = textBlock && textBlock.type === 'text' ? textBlock.text : '';
