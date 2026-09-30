@@ -119,7 +119,17 @@ When a foreign-currency line follows (like "U.S. Dollar 180.00"), that's a conti
 - REFUND: merchant reversal of a specific purchase (line labelled with the merchant + "Cr" suffix meaning reversal)
 - FEE: bank charge — "service fee", "cash withdrawal fee", "slow payment fee", "VAT on fees", "int-pymt", "monthly card fee", "lounge access", "currency conversion fee"
 - PAYMENT: the customer paying the card off ("Payment received", "EFT PAYMENT RECEIVED")
-- ADVANCE: money loaded ONTO the card by the business so the cardholder can keep spending — "CASH ADVANCE", "TRANSFER RECEIVED", "TOP UP", "LOAD", "DEPOSIT"
+- ADVANCE: money loaded ONTO the card by the business so the cardholder can keep spending. Common wording:
+    - "CASH ADVANCE"
+    - "TRANSFER RECEIVED"
+    - "TOP UP" / "LOAD" / "DEPOSIT"
+    - **"1bb Fnb Ob Trf"** and any variant of it — this is FNB Online
+      Banking Transfer, a top-up from the master account into the
+      card. ALWAYS classify these as ADVANCE regardless of the trailing
+      reference code. Amounts are Cr (credit / negative sign).
+    - "OB TRF", "OB Trf", "Ob Trf", "Online Banking Transfer"
+    - Any row that starts with "1bb" — that's FNB's internal transfer prefix
+    - "FNB Transfer", "FNB TRF"
 - INTEREST: "Interest charged"
 - OTHER: use only when the row is unclassifiable — admin will review
 
@@ -334,11 +344,12 @@ export class AIStatementExtractorService {
     );
 
     // Defensive scrub: the AI ignores our "skip these rows" instructions
-    // maybe 15% of the time. When it does, Balance Transferred / Payment
-    // Received rows get flagged as PURCHASE with a positive amount,
-    // inflating the statement total by tens of thousands. We strip them
-    // here based on the merchant text — cheaper and more reliable than
-    // an extra AI call to re-classify.
+    // maybe 15% of the time. Two categories of rewrites happen here:
+    //   1. Bookkeeping rows the AI shouldn't have emitted (Balance
+    //      Transferred, Payment Received) — dropped entirely.
+    //   2. FNB Online Banking Transfer rows the AI mis-classifies as
+    //      PURCHASE — reclassified as ADVANCE so the credit sign is
+    //      preserved and CardAdvance records get created.
     const BOOKKEEPING_PATTERNS = [
       /balance\s*transfer/i,       // "Balance Transferred"
       /balance\s*brought\s*forward/i,
@@ -350,18 +361,48 @@ export class AIStatementExtractorService {
       /credit\s*adjustment/i,
       /card\s*total/i,             // shouldn't reach here but paranoia
     ];
-    return coerced.filter((r) => {
-      const isBookkeeping = BOOKKEEPING_PATTERNS.some((re) =>
-        re.test(r.merchant),
-      );
-      if (isBookkeeping) {
-        this.logger.debug?.(
-          `Filtered bookkeeping row: card ${last4} "${r.merchant}" R ${r.amount.toFixed(2)} (${r.kind})`,
+    // FNB Online Banking Transfer variants. These are top-ups from the
+    // master account into the card — always ADVANCE.
+    const FNB_TRANSFER_PATTERNS = [
+      /^1bb\s+fnb/i,               // "1bb Fnb Ob Trf ..."
+      /1bb\s*fnb\s*ob\s*trf/i,
+      /fnb\s*ob\s*trf/i,
+      /ob\s*trf/i,
+      /online\s*banking\s*transfer/i,
+      /fnb\s*(internal\s*)?transfer/i,
+    ];
+    return coerced
+      .filter((r) => {
+        const isBookkeeping = BOOKKEEPING_PATTERNS.some((re) =>
+          re.test(r.merchant),
         );
-        return false;
-      }
-      return true;
-    });
+        if (isBookkeeping) {
+          this.logger.debug?.(
+            `Filtered bookkeeping row: card ${last4} "${r.merchant}" R ${r.amount.toFixed(2)} (${r.kind})`,
+          );
+          return false;
+        }
+        return true;
+      })
+      .map((r) => {
+        // If the row looks like an FNB internal transfer but the AI
+        // didn't call it ADVANCE, rewrite it. Also force the amount
+        // negative — these are always credits (Cr) on the statement.
+        const isFnbTransfer = FNB_TRANSFER_PATTERNS.some((re) =>
+          re.test(r.merchant),
+        );
+        if (isFnbTransfer && r.kind !== 'ADVANCE') {
+          this.logger.debug?.(
+            `Reclassified FNB transfer: card ${last4} "${r.merchant}" R ${r.amount.toFixed(2)} ${r.kind} → ADVANCE`,
+          );
+          return {
+            ...r,
+            kind: 'ADVANCE' as StatementRowKind,
+            amount: r.amount > 0 ? -r.amount : r.amount,
+          };
+        }
+        return r;
+      });
   }
 
   // Small helper — process an array with bounded parallelism. Prevents
