@@ -27,9 +27,14 @@ const KEYS = {
   AI_MODEL: 'ai.model',
   AI_FALLBACK_MODEL: 'ai.fallbackModel',
   AI_FALLBACK_THRESHOLD: 'ai.fallbackThreshold',
+  // Notification kill-switches (default true — turn OFF while testing
+  // to avoid emailing real users on every upload / edit request).
+  NOTIFY_STATEMENT_EMAILS: 'notifications.statementUploadEmails',
+  NOTIFY_INVOICE_CHASE_EMAILS: 'notifications.invoiceChaseEmails',
+  NOTIFY_EDIT_REQUEST_EMAILS: 'notifications.editRequestEmails',
 } as const;
 
-type Tab = 'mail' | 'fx' | 'recon' | 'edit' | 'ai';
+type Tab = 'mail' | 'fx' | 'recon' | 'edit' | 'ai' | 'notify';
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>('mail');
@@ -77,6 +82,7 @@ export default function SettingsPage() {
           <TabBtn active={tab === 'recon'} onClick={() => setTab('recon')}>Reconciliation</TabBtn>
           <TabBtn active={tab === 'edit'}  onClick={() => setTab('edit')}>Edit unlock</TabBtn>
           <TabBtn active={tab === 'ai'}    onClick={() => setTab('ai')}>AI / OCR</TabBtn>
+          <TabBtn active={tab === 'notify'} onClick={() => setTab('notify')}>Notifications</TabBtn>
         </div>
 
         {error && <p className="text-sm text-red-600 bg-red-50 p-3 rounded mb-4">{error}</p>}
@@ -230,6 +236,37 @@ export default function SettingsPage() {
               </>
             )}
 
+            {tab === 'notify' && (
+              <>
+                <p className="text-xs text-gray-600 -mt-2 mb-2">
+                  Kill-switches for automated emails. Turn OFF during
+                  testing so uploads / edits don&apos;t spam real users.
+                  All default to ON in production.
+                </p>
+
+                <ToggleField
+                  label="Statement upload emails"
+                  hint="When a statement is uploaded, email each cardholder a list of their still-unmatched transactions."
+                  value={values[KEYS.NOTIFY_STATEMENT_EMAILS] !== false}
+                  onChange={(v) => set(KEYS.NOTIFY_STATEMENT_EMAILS, v)}
+                />
+
+                <ToggleField
+                  label="Invoice-chase emails"
+                  hint='When admins click "Notify" on an unmatched transaction, email the cardholder to remind them to upload the receipt.'
+                  value={values[KEYS.NOTIFY_INVOICE_CHASE_EMAILS] !== false}
+                  onChange={(v) => set(KEYS.NOTIFY_INVOICE_CHASE_EMAILS, v)}
+                />
+
+                <ToggleField
+                  label="Edit-request emails"
+                  hint="When a user requests to edit a locked invoice, email every active admin so they can review."
+                  value={values[KEYS.NOTIFY_EDIT_REQUEST_EMAILS] !== false}
+                  onChange={(v) => set(KEYS.NOTIFY_EDIT_REQUEST_EMAILS, v)}
+                />
+              </>
+            )}
+
             <div className="pt-4">
               <button onClick={save} disabled={saving} className="bg-black text-white px-5 py-2 rounded-lg font-medium hover:opacity-90 disabled:opacity-40">
                 {saving ? 'Saving...' : 'Save changes'}
@@ -266,6 +303,30 @@ function SelectField({ label, value, onChange, options }: { label: string; value
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500">
         {options.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
       </select>
+    </div>
+  );
+}
+
+// Boolean setting rendered as a labeled switch. Used by the
+// Notifications tab for the kill-switches.
+function ToggleField({ label, hint, value, onChange }: { label: string; hint?: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-b border-gray-100 last:border-0">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-gray-800">{label}</p>
+        {hint && <p className="text-xs text-gray-500 mt-0.5">{hint}</p>}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!value)}
+        role="switch"
+        aria-checked={value}
+        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 ${value ? 'bg-orange-500' : 'bg-gray-300'}`}
+      >
+        <span
+          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform mt-0.5 ${value ? 'translate-x-5' : 'translate-x-0.5'}`}
+        />
+      </button>
     </div>
   );
 }

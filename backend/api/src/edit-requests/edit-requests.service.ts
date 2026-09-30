@@ -151,7 +151,12 @@ export class EditRequestsService {
     // Email every ACTIVE admin too. Fire-and-forget — if SMTP fails
     // the in-app notification above still reaches them. We fetch the
     // requester's name for the subject line ("Rehan → Woolworths").
-    void (async () => {
+    // Kill-switch: Admin → Settings → Notifications can turn this off.
+    const editEmailsEnabled = this.settings.getBoolean(
+      SETTING_KEYS.NOTIFY_EDIT_REQUEST_EMAILS,
+      true,
+    );
+    if (editEmailsEnabled) void (async () => {
       try {
         const [admins, requester] = await Promise.all([
           this.prisma.user.findMany({

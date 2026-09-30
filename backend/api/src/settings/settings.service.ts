@@ -57,6 +57,15 @@ export const SETTING_KEYS = {
   AI_MODEL: 'ai.model',                        // primary (fast, cheap)
   AI_FALLBACK_MODEL: 'ai.fallbackModel',       // used when primary is unsure
   AI_FALLBACK_THRESHOLD: 'ai.fallbackThreshold', // confidence below this triggers fallback
+
+  // Notification toggles. Master kill-switches for user-facing emails
+  // that fire from background side-effects (statement upload, invoice
+  // chase, edit-request approval, etc.). Default TRUE — turning these
+  // OFF is for testing / staging when you don't want to spam users
+  // while iterating on a real production dataset.
+  NOTIFY_STATEMENT_EMAILS: 'notifications.statementUploadEmails',
+  NOTIFY_INVOICE_CHASE_EMAILS: 'notifications.invoiceChaseEmails',
+  NOTIFY_EDIT_REQUEST_EMAILS: 'notifications.editRequestEmails',
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];

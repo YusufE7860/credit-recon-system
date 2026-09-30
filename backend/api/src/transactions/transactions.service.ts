@@ -11,6 +11,7 @@ import { AuditLogService } from '../audit/audit.service';
 import { AuditAction } from '../audit/audit-actions';
 import { MailerService } from '../mailer/mailer.service';
 import { Logger } from '@nestjs/common';
+import { SettingsService, SETTING_KEYS } from '../settings/settings.service';
 
 // Subset of user fields we surface alongside cards (when one is assigned).
 const USER_PUBLIC_SELECT = {
@@ -57,6 +58,7 @@ export class TransactionsService {
     private notifications: NotificationsService,
     private audit: AuditLogService,
     private mailer: MailerService,
+    private settings: SettingsService,
   ) {}
 
   // Admin "nudge" — sends an in-app notification to the transaction's
@@ -94,7 +96,17 @@ export class TransactionsService {
 
     // Email the user too. Fire-and-forget: SMTP hiccup shouldn't
     // block the in-app notification / audit that already succeeded.
-    void (async () => {
+    // Global toggle: admin can disable invoice-chase emails while
+    // testing (Admin → Settings → Notifications).
+    const chaseEmailsEnabled = this.settings.getBoolean(
+      SETTING_KEYS.NOTIFY_INVOICE_CHASE_EMAILS,
+      true,
+    );
+    if (!chaseEmailsEnabled) {
+      this.logger.log(
+        `notifyOwnerAboutUnmatched: chase emails disabled by setting — skipping tx ${tx.id}`,
+      );
+    } else void (async () => {
       try {
         const owner = await this.prisma.user.findUnique({
           where: { id: tx.userId },

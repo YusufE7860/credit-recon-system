@@ -18,6 +18,7 @@ import {
 } from './ai-statement-extractor.service';
 import { ReconciliationService } from '../reconciliation/reconciliation.service';
 import { MailerService } from '../mailer/mailer.service';
+import { SettingsService, SETTING_KEYS } from '../settings/settings.service';
 import { JwtUser, isPrivileged } from '../auth/role.enum';
 import {
   normaliseLast4,
@@ -116,6 +117,7 @@ export class StatementsService {
     private reconciliation: ReconciliationService,
     private mailer: MailerService,
     private aiStatement: AIStatementExtractorService,
+    private settings: SettingsService,
   ) {}
 
   // Try AI extraction first; if it fails or the API key isn't
@@ -242,6 +244,18 @@ export class StatementsService {
     periodStart: Date | null;
     periodEnd: Date | null;
   }): Promise<void> {
+    // Global kill-switch — flip off in Admin → Settings while
+    // testing so uploads don't spam real cardholders. Default true.
+    const enabled = this.settings.getBoolean(
+      SETTING_KEYS.NOTIFY_STATEMENT_EMAILS,
+      true,
+    );
+    if (!enabled) {
+      this.logger.log(
+        `Statement ${statement.id}: cardholder emails disabled by setting — skipping.`,
+      );
+      return;
+    }
     try {
       // Pull every transaction on this statement, joined with its card
       // and card owner. Group by owner userId in JS, then per group
