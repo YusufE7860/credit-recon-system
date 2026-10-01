@@ -327,7 +327,12 @@ model Invoice {
   // invoices: two Takealot receipts paid as one R 1044 swipe).
   // @unique removed so N-to-1 stacking works.
   transactionId   String?
-  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+  // onDelete: SetNull — when a Transaction is deleted (statement re-uploads,
+  // admin cleanup, etc.), nullify the FK rather than orphaning it with a
+  // stale pointer. Status gets reset to PENDING by the reconciliation
+  // service's periodic cleanup; here we at least guarantee the FK is
+  // consistent so JOINs always resolve or return null cleanly.
+  transaction     Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
 
   // Optional line-item splits when a single invoice covers multiple
   // categories or stores. When `splits` is empty (the common case),
